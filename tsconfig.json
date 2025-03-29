@@ -18,6 +18,6 @@
     "experimentalDecorators": true, // If using decorators (e.g., sometimes with Prisma/NestJS-like patterns)
     "emitDecoratorMetadata": true // If using decorators
   },
-  "include": ["src/**/*.ts"], // Only compile files in src
+  "include": ["src/**/*.ts", "server.ts"], // Only compile files in src
   "exclude": ["node_modules", "dist", "tests"]
 }
