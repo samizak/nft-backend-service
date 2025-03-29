@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2021", // Target modern Node.js versions
+    "module": "CommonJS", // Standard module system for Node.js
+    "lib": ["ES2021"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "strict": true, // Enable all strict type-checking options
+    "esModuleInterop": true, // Allows commonjs require of es modules
+    "skipLibCheck": true, // Skip type checking of declaration files
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "sourceMap": true, // Generate source maps for debugging
+    "baseUrl": ".", // Allows path aliases
+    "paths": {
+      "@/*": ["src/*"] // Example alias for easier imports
+    },
+    "experimentalDecorators": true, // If using decorators (e.g., sometimes with Prisma/NestJS-like patterns)
+    "emitDecoratorMetadata": true // If using decorators
+  },
+  "include": ["src/**/*.ts"], // Only compile files in src
+  "exclude": ["node_modules", "dist", "tests"]
+}

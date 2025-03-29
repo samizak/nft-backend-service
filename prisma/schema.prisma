@@ -1,0 +1,48 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  // output   = "./generated/client" // Optional: custom output path
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String    @id @default(cuid())
+  walletAddress String  @unique
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  nfts        Nft[]
+  // Add other user fields
+}
+
+model Collection {
+  id        String   @id @default(cuid())
+  slug      String   @unique // e.g., 'cool-cats'
+  name      String?
+  // Add other collection fields (contract address, chain, etc.)
+  nfts      Nft[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Nft {
+  id            String      @id @default(cuid())
+  tokenId       String
+  contractAddress String
+  metadata      Json?       // Store variable NFT metadata here
+  lastOwner     User?       @relation(fields: [ownerId], references: [id])
+  ownerId       String?
+  collection    Collection  @relation(fields: [collectionId], references: [id])
+  collectionId  String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([contractAddress, tokenId]) // Ensure unique NFT per collection
+}
+
+// Add more models: Transaction, PortfolioSnapshot, PriceHistory etc.
