@@ -9,11 +9,16 @@ interface EnsParams {
 export default async function (fastify: FastifyInstance) {
   fastify.get(
     '/resolve/:name',
-    async (request: FastifyRequest<{ Params: EnsParams }>, reply: FastifyReply) => {
+    async (
+      request: FastifyRequest<{ Params: EnsParams }>,
+      reply: FastifyReply
+    ) => {
       const { name } = request.params;
 
       if (!name) {
-        return reply.code(400).send({ error: 'ENS name parameter is required' });
+        return reply
+          .code(400)
+          .send({ error: 'ENS name parameter is required' });
       }
 
       try {
@@ -21,7 +26,9 @@ export default async function (fastify: FastifyInstance) {
         if (address) {
           return reply.send({ ensName: name, address });
         } else {
-          return reply.code(404).send({ error: `Could not resolve ENS name: ${name}` });
+          return reply
+            .code(404)
+            .send({ error: `Could not resolve ENS name: ${name}` });
         }
       } catch (error) {
         fastify.log.error(`Error processing ENS request for ${name}:`, error);
@@ -29,4 +36,4 @@ export default async function (fastify: FastifyInstance) {
       }
     }
   );
-} 
+}
