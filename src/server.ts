@@ -28,12 +28,12 @@ server.register(cors, {
 });
 server.register(FastifySSEPlugin);
 
-server.register(ensRoutes, { prefix: '/ens' });
-server.register(userRoutes, { prefix: '/user' });
-server.register(nftRoutes, { prefix: '/nft' });
-server.register(eventRoutes, { prefix: '/event' });
-server.register(collectionRoutes, { prefix: '/collection' });
-server.register(marketRoutes, { prefix: '/market' });
+server.register(ensRoutes, { prefix: '/api/ens' });
+server.register(userRoutes, { prefix: '/api/user' });
+server.register(nftRoutes, { prefix: '/api/nft' });
+server.register(eventRoutes, { prefix: '/api/event' });
+server.register(collectionRoutes, { prefix: '/api/collection' });
+server.register(marketRoutes, { prefix: '/api/market' });
 
 server.get('/', (request, reply) => {
   reply.send('NFT Backend Service is running!');
