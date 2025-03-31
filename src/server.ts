@@ -5,9 +5,13 @@ import fastify from 'fastify';
 import cors from '@fastify/cors';
 import ensRoutes from './api/ens/routes'; 
 import userRoutes from './api/user/routes';
+import nftRoutes from './api/nft/routes';
 import { env } from 'process';
 
-const server = fastify({ logger: true }); 
+const server = fastify({ 
+    logger: true,
+    querystringParser: str => require('qs').parse(str, { parameterLimit: 5000 })
+}); 
 
 server.register(cors, { 
   origin: '*',
@@ -16,6 +20,7 @@ server.register(cors, {
 
 server.register(ensRoutes, { prefix: '/ens' });
 server.register(userRoutes, { prefix: '/user' });
+server.register(nftRoutes, { prefix: '/nft' });
 
 server.get('/', (request, reply) => {
   reply.send('NFT Backend Service is running!');
