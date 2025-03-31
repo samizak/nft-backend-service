@@ -10,6 +10,7 @@ import userRoutes from './api/user/routes';
 import nftRoutes from './api/nft/routes';
 import eventRoutes from './api/event/routes';
 import collectionRoutes from './api/collection/routes';
+import marketRoutes from './api/market/routes';
 import { env } from 'process';
 
 import { startPriceFetcher } from './services/priceFetcher';
@@ -32,6 +33,7 @@ server.register(userRoutes, { prefix: '/user' });
 server.register(nftRoutes, { prefix: '/nft' });
 server.register(eventRoutes, { prefix: '/event' });
 server.register(collectionRoutes, { prefix: '/collection' });
+server.register(marketRoutes, { prefix: '/market' });
 
 server.get('/', (request, reply) => {
   reply.send('NFT Backend Service is running!');
