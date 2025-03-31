@@ -7,12 +7,11 @@ import { env } from 'process';
 const COINGECKO_API_URL =
   'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd,eur,gbp,jpy,aud,cad,cny';
 const COINGECKO_API_KEY = env.COINGECKO_API_KEY;
-const FETCH_INTERVAL_MS = 1 * 60 * 1000; // 1 minutes
+const FETCH_INTERVAL_MS = 1 * 60 * 1000;
 const MAX_RETRIES = 5;
-const INITIAL_RETRY_DELAY_MS = 5 * 1000; // 5 seconds
-const MAX_RETRY_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+const INITIAL_RETRY_DELAY_MS = 5 * 1000;
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
-// Default prices used as fallback
 const DEFAULT_ETH_PRICES = {
   usd: 3000,
   eur: 2800,
@@ -32,14 +31,14 @@ interface EthPrices {
   cad?: number;
   cny?: number;
   lastUpdated?: Date;
-  isDefault?: boolean; // Flag indicating if default prices are used
+  isDefault?: boolean;
 }
 
 let currentEthPrices: EthPrices = {};
 let intervalId: NodeJS.Timeout | null = null;
-let retryTimeoutId: NodeJS.Timeout | null = null; // Timeout for scheduled retries
+let retryTimeoutId: NodeJS.Timeout | null = null;
 let retryCount = 0;
-let isFetching = false; // Prevent concurrent fetches
+let isFetching = false;
 
 async function fetchEthPrices(isRetry: boolean = false) {
   if (isFetching && !isRetry) {
@@ -48,7 +47,6 @@ async function fetchEthPrices(isRetry: boolean = false) {
   }
   isFetching = true;
 
-  // Clear any pending retry timeout if we are starting a new fetch cycle (not a retry)
   if (!isRetry && retryTimeoutId) {
     clearTimeout(retryTimeoutId);
     retryTimeoutId = null;
@@ -61,7 +59,6 @@ async function fetchEthPrices(isRetry: boolean = false) {
     console.error(
       'COINGECKO_API_KEY is not set. Using default prices if available or empty.'
     );
-    // Only set defaults if no prices (even defaults) exist yet
     if (!currentEthPrices.lastUpdated) {
       currentEthPrices = {
         ...DEFAULT_ETH_PRICES,
@@ -80,8 +77,7 @@ async function fetchEthPrices(isRetry: boolean = false) {
         Accept: 'application/json',
         'x-cg-demo-api-key': COINGECKO_API_KEY,
       },
-      // Add a reasonable timeout
-      timeout: 15000, // 15 seconds
+      timeout: 15000,
     });
 
     if (response.data && response.data.ethereum) {
@@ -94,18 +90,17 @@ async function fetchEthPrices(isRetry: boolean = false) {
         'Successfully fetched and updated Ethereum prices:',
         currentEthPrices
       );
-      retryCount = 0; // Reset retry count on success
+      retryCount = 0;
     } else {
       console.warn(
         'Received unexpected data format from CoinGecko:',
         response.data
       );
-      // Treat unexpected format as an error for retry purposes
       throw new Error('Unexpected data format from CoinGecko');
     }
   } catch (error) {
     let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount);
-    delay = Math.min(delay, MAX_RETRY_DELAY_MS); // Cap the delay
+    delay = Math.min(delay, MAX_RETRY_DELAY_MS);
     let shouldRetry = true;
 
     if (axios.isAxiosError(error)) {
@@ -117,13 +112,12 @@ async function fetchEthPrices(isRetry: boolean = false) {
         error.response?.data || error.message
       );
 
-      // Handle rate limiting (429)
       if (status === 429) {
         const retryAfterHeader = error.response?.headers?.['retry-after'];
         if (retryAfterHeader) {
           const retryAfterSeconds = parseInt(retryAfterHeader, 10);
           if (!isNaN(retryAfterSeconds)) {
-            delay = Math.max(delay, retryAfterSeconds * 1000); // Use server suggested delay if longer
+            delay = Math.max(delay, retryAfterSeconds * 1000);
             console.log(
               `Rate limited. Retrying after ${delay / 1000} seconds (from header).`
             );
@@ -138,19 +132,16 @@ async function fetchEthPrices(isRetry: boolean = false) {
           );
         }
       } else if (status && status >= 400 && status < 500 && status !== 429) {
-        // Don't retry on client errors (4xx) other than 429
         console.error(
           'Non-retryable client error occurred. Stopping retries for this cycle.'
         );
         shouldRetry = false;
       }
-      // Server errors (5xx) and network errors will use the calculated delay and retry
     } else {
       console.error(
         'An unexpected non-Axios error occurred during price fetch:',
         error
       );
-      // Assume transient and retry for non-axios errors too
     }
 
     if (shouldRetry && retryCount < MAX_RETRIES) {
@@ -158,7 +149,6 @@ async function fetchEthPrices(isRetry: boolean = false) {
       console.log(
         `Scheduling retry ${retryCount}/${MAX_RETRIES} in ${delay / 1000} seconds...`
       );
-      // Clear previous retry timeout if any
       if (retryTimeoutId) clearTimeout(retryTimeoutId);
       retryTimeoutId = setTimeout(() => fetchEthPrices(true), delay);
     } else {
@@ -166,7 +156,6 @@ async function fetchEthPrices(isRetry: boolean = false) {
         `Max retries (${MAX_RETRIES}) reached or non-retryable error. Using default prices if available.`
       );
       if (!currentEthPrices.lastUpdated) {
-        // Only set defaults if we never got initial prices
         currentEthPrices = {
           ...DEFAULT_ETH_PRICES,
           lastUpdated: new Date(),
@@ -179,10 +168,8 @@ async function fetchEthPrices(isRetry: boolean = false) {
         console.log(
           'Keeping previously fetched prices after exhausting retries/non-retryable error.'
         );
-        // Optionally mark existing prices as potentially stale?
-        // currentEthPrices.isStale = true;
       }
-      retryCount = 0; // Reset for the next scheduled interval
+      retryCount = 0;
     }
   } finally {
     isFetching = false;
@@ -199,12 +186,9 @@ export function startPriceFetcher() {
     `Starting Ethereum price fetcher. Interval: ${FETCH_INTERVAL_MS / 1000} seconds.`
   );
 
-  // Fetch immediately on start, respecting isFetching flag
   fetchEthPrices();
 
-  // Then fetch periodically
   intervalId = setInterval(() => {
-    // Don't start a new fetch cycle if a retry is already scheduled
     if (!retryTimeoutId) {
       fetchEthPrices();
     } else {

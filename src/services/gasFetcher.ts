@@ -8,19 +8,17 @@ const INFURA_API_KEY = env.INFURA_API_KEY;
 const INFURA_URL = INFURA_API_KEY
   ? `https://mainnet.infura.io/v3/${INFURA_API_KEY}`
   : '';
-const FETCH_INTERVAL_MS = 60 * 1000; // Fetch every 60 seconds
+const FETCH_INTERVAL_MS = 60 * 1000;
 const MAX_RETRIES = 5;
-const INITIAL_RETRY_DELAY_MS = 5 * 1000; // 5 seconds
-const MAX_RETRY_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+const INITIAL_RETRY_DELAY_MS = 5 * 1000;
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
-// Default gas price (e.g., 20 Gwei) in Wei, used as fallback
-const DEFAULT_GAS_PRICE_WEI = '0x4A817C800'; // 20 * 10^9
+const DEFAULT_GAS_PRICE_WEI = '0x4A817C800';
 
-// Gas price is typically returned in Wei (string), store it as such
 interface GasPriceInfo {
   gasPriceWei?: string;
   lastUpdated?: Date;
-  isDefault?: boolean; // Flag indicating if default price is used
+  isDefault?: boolean;
 }
 
 let currentGasPrice: GasPriceInfo = {};
@@ -109,7 +107,6 @@ async function fetchGasPrice(isRetry: boolean = false) {
         error.response?.data || error.message
       );
 
-      // Handle rate limiting (429)
       if (status === 429) {
         const retryAfterHeader = error.response?.headers?.['retry-after'];
         if (retryAfterHeader) {
@@ -135,7 +132,6 @@ async function fetchGasPrice(isRetry: boolean = false) {
         );
         shouldRetry = false;
       }
-      // Retry on server errors (5xx) or network errors
     } else {
       console.error(
         'An unexpected non-Axios error occurred during gas price fetch:',
@@ -155,7 +151,6 @@ async function fetchGasPrice(isRetry: boolean = false) {
         `Max retries (${MAX_RETRIES}) reached or non-retryable error for gas price. Using default value if available.`
       );
       if (!currentGasPrice.lastUpdated) {
-        // Set defaults only if we never got initial prices
         currentGasPrice = {
           gasPriceWei: DEFAULT_GAS_PRICE_WEI,
           lastUpdated: new Date(),
