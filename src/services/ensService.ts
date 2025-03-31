@@ -1,8 +1,8 @@
 import { ethers } from 'ethers';
 
 // Ensure RPC_URL is set in your environment variables (.env or .env.local)
-const rpcUrl = process.env.INFURA_API_KEY 
-  ? `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}` 
+const rpcUrl = process.env.INFURA_API_KEY
+  ? `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`
   : undefined;
 
 if (!rpcUrl) {
@@ -19,7 +19,9 @@ const provider = new ethers.JsonRpcProvider(rpcUrl);
  * @param ensName The ENS name to resolve (e.g., 'vitalik.eth').
  * @returns The resolved Ethereum address or null if not found or an error occurs.
  */
-export const resolveEnsName = async (ensName: string): Promise<string | null> => {
+export const resolveEnsName = async (
+  ensName: string
+): Promise<string | null> => {
   try {
     console.log(`Resolving ENS name: ${ensName}`);
     const address = await provider.resolveName(ensName);
@@ -29,4 +31,4 @@ export const resolveEnsName = async (ensName: string): Promise<string | null> =>
     console.error(`Error resolving ENS name ${ensName}:`, error);
     return null; // Return null on error or if the name doesn't resolve
   }
-}; 
+};

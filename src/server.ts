@@ -1,22 +1,23 @@
 import * as dotenv from 'dotenv';
-dotenv.config(); 
+dotenv.config();
 
 import fastify from 'fastify';
 import cors from '@fastify/cors';
 import { FastifySSEPlugin } from 'fastify-sse-v2';
 
-import ensRoutes from './api/ens/routes'; 
+import ensRoutes from './api/ens/routes';
 import userRoutes from './api/user/routes';
 import nftRoutes from './api/nft/routes';
 import eventRoutes from './api/event/routes';
 import { env } from 'process';
 
-const server = fastify({ 
-    logger: true,
-    querystringParser: str => require('qs').parse(str, { parameterLimit: 5000 })
-}); 
+const server = fastify({
+  logger: true,
+  querystringParser: (str) =>
+    require('qs').parse(str, { parameterLimit: 5000 }),
+});
 
-server.register(cors, { 
+server.register(cors, {
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 });
