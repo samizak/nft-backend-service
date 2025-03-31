@@ -10,56 +10,44 @@ import {
 const OPENSEA_API_KEY = env.OPENSEA_API_KEY || '';
 const OPENSEA_API_BASE = 'https://api.opensea.io/api/v2';
 
-async function fetchCollectionInfo(
-  collectionsToFetch: string[]
-): Promise<CollectionInfo[]> {
-  if (collectionsToFetch.length === 0 || !OPENSEA_API_KEY) {
-    return [];
+async function fetchSingleCollectionInfo(
+  slug: string
+): Promise<CollectionInfo | null> {
+  if (!OPENSEA_API_KEY) {
+    return null;
   }
-
-  const url = `${OPENSEA_API_BASE}/collections/batch`;
-  console.log(`Fetching collection info for: ${collectionsToFetch.join(', ')}`);
+  const url = `${OPENSEA_API_BASE}/collections/${slug}`;
+  console.log(`Fetching collection info for: ${slug}`);
 
   try {
-    const response = await axios.post(
-      url,
-      { collections: collectionsToFetch },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': OPENSEA_API_KEY,
-        },
-      }
-    );
+    const response = await axios.get(url, {
+      headers: {
+        Accept: 'application/json',
+        'X-API-KEY': OPENSEA_API_KEY,
+      },
+    });
 
-    const data = response.data;
+    const collection = response.data;
 
-    if (!data.collections) {
-      console.warn('No collections found in OpenSea batch response');
-      return [];
-    }
-
-    return data.collections.map(
-      (collection: any): CollectionInfo => ({
-        collection: collection.collection,
-        name: collection.name,
-        description: collection.description,
-        image_url: collection.image_url,
-        safelist_status: collection.safelist_request_status,
-      })
-    );
+    return {
+      collection: collection.collection,
+      name: collection.name,
+      description: collection.description,
+      image_url: collection.image_url,
+      safelist_status: collection.safelist_request_status,
+    };
   } catch (error) {
     if (axios.isAxiosError(error)) {
       console.error(
-        'Failed to fetch collection info:',
+        `Failed to fetch collection info for ${slug}:`,
         error.response?.status,
         error.response?.statusText,
         error.response?.data || error.message
       );
     } else {
-      console.error('Failed to fetch collection info:', error);
+      console.error(`Failed to fetch collection info for ${slug}:`, error);
     }
-    return [];
+    return null;
   }
 }
 
@@ -118,28 +106,52 @@ export async function fetchBatchCollectionData(
 ): Promise<BatchCollectionsResponse> {
   const result: { [collectionSlug: string]: CollectionResult } = {};
 
-  const fetchedInfos = await fetchCollectionInfo(collectionSlugs);
-  fetchedInfos.forEach((info) => {
-    if (!result[info.collection]) {
-      result[info.collection] = {};
+  const infoPromises = collectionSlugs.map((slug) =>
+    fetchSingleCollectionInfo(slug)
+  );
+
+  const pricePromises = collectionSlugs.map((slug) => fetchFloorPrice(slug));
+
+  const [infoResults, priceResults] = await Promise.all([
+    Promise.allSettled(infoPromises),
+    Promise.allSettled(pricePromises),
+  ]);
+
+  infoResults.forEach((infoResult, index) => {
+    const slug = collectionSlugs[index];
+    if (infoResult.status === 'fulfilled' && infoResult.value) {
+      if (!result[slug]) {
+        result[slug] = {};
+      }
+      result[slug].info = infoResult.value;
+    } else if (infoResult.status === 'rejected') {
+      console.warn(
+        `Could not fetch info for ${slug}. Reason:`,
+        infoResult.reason
+      );
+      if (!result[slug]) {
+        result[slug] = {};
+      }
     }
-    result[info.collection].info = info;
   });
 
-  for (const slug of collectionSlugs) {
-    const priceData = await fetchFloorPrice(slug);
-    if (priceData) {
+  priceResults.forEach((priceResult, index) => {
+    const slug = collectionSlugs[index];
+    if (priceResult.status === 'fulfilled' && priceResult.value) {
       if (!result[slug]) {
         result[slug] = {};
       }
-      result[slug].price = priceData;
-    } else {
+      result[slug].price = priceResult.value;
+    } else if (priceResult.status === 'rejected') {
+      console.warn(
+        `Could not fetch price for ${slug}. Reason:`,
+        priceResult.reason
+      );
       if (!result[slug]) {
         result[slug] = {};
       }
-      console.warn(`Could not fetch price for ${slug}`);
     }
-  }
+  });
 
   collectionSlugs.forEach((slug) => {
     if (!result[slug]) {

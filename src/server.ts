@@ -12,6 +12,8 @@ import eventRoutes from './api/event/routes';
 import collectionRoutes from './api/collection/routes';
 import { env } from 'process';
 
+import { startPriceFetcher } from './services/priceFetcher';
+
 const server = fastify({
   logger: true,
   querystringParser: (str) =>
@@ -36,6 +38,9 @@ server.get('/', (request, reply) => {
 
 const start = async () => {
   try {
+    // Start background services
+    startPriceFetcher();
+
     await server.listen({ port: Number(env.PORT) || 8080, host: '0.0.0.0' });
   } catch (err) {
     server.log.error(err);
