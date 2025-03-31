@@ -1,29 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { getUserProfileFromOpenSea } from './service';
 
