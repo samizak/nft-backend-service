@@ -7,10 +7,10 @@ import { env } from 'process';
 const COINGECKO_API_URL =
   'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd,eur,gbp,jpy,aud,cad,cny';
 const COINGECKO_API_KEY = env.COINGECKO_API_KEY;
-const FETCH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const FETCH_INTERVAL_MS = 1 * 60 * 1000; // 1 minutes
 const MAX_RETRIES = 5;
-const INITIAL_RETRY_DELAY_MS = 15 * 1000; // 15 seconds
-const MAX_RETRY_DELAY_MS = 10 * 60 * 1000; // 10 minutes
+const INITIAL_RETRY_DELAY_MS = 5 * 1000; // 5 seconds
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000; // 5 minutes
 
 // Default prices used as fallback
 const DEFAULT_ETH_PRICES = {

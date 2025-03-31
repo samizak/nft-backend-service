@@ -13,6 +13,7 @@ import collectionRoutes from './api/collection/routes';
 import { env } from 'process';
 
 import { startPriceFetcher } from './services/priceFetcher';
+import { startGasFetcher } from './services/gasFetcher';
 
 const server = fastify({
   logger: true,
@@ -40,6 +41,7 @@ const start = async () => {
   try {
     // Start background services
     startPriceFetcher();
+    startGasFetcher();
 
     await server.listen({ port: Number(env.PORT) || 8080, host: '0.0.0.0' });
   } catch (err) {
