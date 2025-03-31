@@ -118,12 +118,10 @@ export async function* streamNftEventsByAccount(
         `https://api.opensea.io/api/v2/events/accounts/${address}`
       );
       url.searchParams.append('chain', 'ethereum');
-      // Fetch relevant event types
+      // Fetch relevant event types permitted by the API (sale, transfer, cancel)
       url.searchParams.append('event_type', 'sale');
       url.searchParams.append('event_type', 'transfer');
-      url.searchParams.append('event_type', 'cancel'); // Listing cancellations
-      url.searchParams.append('event_type', 'bid_entered');
-      url.searchParams.append('event_type', 'bid_cancelled');
+      url.searchParams.append('event_type', 'cancel');
       url.searchParams.append('limit', OPENSEA_LIMIT.toString());
 
       if (nextCursor) {
