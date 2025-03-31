@@ -4,13 +4,15 @@ import { getUserProfile } from './controller';
 const profileParamsSchema = {
   type: 'object',
   properties: {
-    id: { type: 'string' }
+    id: { type: 'string' },
   },
-  required: ['id']
-} as const; 
+  required: ['id'],
+} as const;
 
-async function userRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
-
+async function userRoutes(
+  fastify: FastifyInstance,
+  options: FastifyPluginOptions
+) {
   fastify.get(
     '/profile/:id',
     {
@@ -21,11 +23,10 @@ async function userRoutes(fastify: FastifyInstance, options: FastifyPluginOption
         //   200: { ... schema for success ... },
         //   404: { ... schema for not found ... },
         // }
-      }
+      },
     },
     getUserProfile
   );
-
 }
 
-export default userRoutes; 
+export default userRoutes;
