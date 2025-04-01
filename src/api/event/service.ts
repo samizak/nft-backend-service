@@ -16,52 +16,73 @@ const RETRY_DELAY = 5000; // 5 seconds delay for rate limit retry
 const MAX_RETRIES = 5;
 const INTER_PAGE_DELAY = 300;
 
-function mapRawEventToActivityEvent(
-  raw: RawOpenSeaEvent
-): ActivityEvent | null {
-  // --- Basic Validation ---
-  if (!raw.event_type || !raw.event_timestamp) {
-    console.warn(
-      'Filtering event: Missing basic fields (event_type or timestamp).',
-      { event_type: raw.event_type, timestamp: raw.event_timestamp }
-    );
+const mapRawEventToActivityEvent = (
+  rawEvent: RawOpenSeaEvent | null
+): ActivityEvent | null => {
+  if (!rawEvent) return null;
+
+  // Basic validation for essential fields
+  if (
+    !rawEvent.event_type ||
+    !rawEvent.event_timestamp ||
+    !rawEvent.nft ||
+    !rawEvent.nft.identifier ||
+    !rawEvent.nft.contract ||
+    !rawEvent.nft.collection
+  ) {
+    console.log('Filtering event: Missing essential fields.', {
+      raw_event: rawEvent,
+    });
     return null;
   }
 
-  // --- Transaction ---
-  if (!raw.transaction) {
-    console.warn(
-      `Filtering event (${raw.event_type}): Missing transaction hash string.`,
-      // Conditionally log the full raw event only in development
-      process.env.NODE_ENV === 'development' ? { raw_event: raw } : {}
+  // --- Transaction / Order Hash Fallback Logic --- START
+  let transactionHash = '';
+  if (
+    rawEvent.transaction &&
+    typeof rawEvent.transaction === 'string' &&
+    rawEvent.transaction.trim() !== ''
+  ) {
+    transactionHash = rawEvent.transaction;
+  } else if (
+    rawEvent.order_hash &&
+    typeof rawEvent.order_hash === 'string' &&
+    rawEvent.order_hash.trim() !== ''
+  ) {
+    console.log(
+      `Using order_hash (${rawEvent.order_hash}) as fallback for event type ${rawEvent.event_type}`
     );
-    return null;
+    transactionHash = rawEvent.order_hash; // Use order_hash if transaction is missing
+  } else {
+    console.log(
+      `Warning: Event type ${rawEvent.event_type} missing both transaction and order_hash. Using empty string.`
+    );
   }
-  const transaction = raw.transaction;
+  // --- Transaction / Order Hash Fallback Logic --- END
 
   // --- NFT Details (Strict Check - Required by ActivityEvent, except name) ---
   if (
-    !raw.nft ||
-    !raw.nft.identifier ||
-    !raw.nft.collection ||
-    !raw.nft.contract ||
-    !raw.nft.display_image_url || // Required by ActivityEvent
-    !raw.nft.image_url // Required by ActivityEvent
+    !rawEvent.nft ||
+    !rawEvent.nft.identifier ||
+    !rawEvent.nft.collection ||
+    !rawEvent.nft.contract ||
+    !rawEvent.nft.display_image_url || // Required by ActivityEvent
+    !rawEvent.nft.image_url // Required by ActivityEvent
   ) {
     console.warn(
-      `Filtering event (${raw.event_type}): Missing required NFT fields (identifier, collection, contract, display_image_url, image_url).`,
-      { nft: raw.nft }
+      `Filtering event (${rawEvent.event_type}): Missing required NFT fields (identifier, collection, contract, display_image_url, image_url).`,
+      { nft: rawEvent.nft }
     );
     return null;
   }
 
   const nft: ActivityEvent['nft'] = {
-    identifier: raw.nft.identifier,
-    collection: raw.nft.collection,
-    contract: raw.nft.contract,
-    name: raw.nft.name ?? null, // Pass name (or null if missing)
-    display_image_url: raw.nft.display_image_url,
-    image_url: raw.nft.image_url,
+    identifier: rawEvent.nft.identifier,
+    collection: rawEvent.nft.collection,
+    contract: rawEvent.nft.contract,
+    name: rawEvent.nft.name ?? null, // Pass name (or null if missing)
+    display_image_url: rawEvent.nft.display_image_url,
+    image_url: rawEvent.nft.image_url,
   };
 
   // --- Accounts (Flexible Check - handle object or direct address) ---
@@ -71,24 +92,25 @@ function mapRawEventToActivityEvent(
   let toUser: OpenSeaUser | undefined = undefined;
 
   // Determine source accounts based on event type and available fields
-  switch (raw.event_type) {
+  switch (rawEvent.event_type) {
     case 'sale':
       // Prefer seller/taker objects if available, fallback to direct addresses
-      fromAddress = raw.seller?.address || (raw as any).seller;
-      toAddress = raw.taker?.address || (raw as any).buyer; // Note: API uses 'buyer' string sometimes
-      fromUser = raw.seller?.user;
-      toUser = raw.taker?.user;
+      fromAddress = rawEvent.seller?.address || (rawEvent as any).seller;
+      toAddress = rawEvent.taker?.address || (rawEvent as any).buyer; // Note: API uses 'buyer' string sometimes
+      fromUser = rawEvent.seller?.user;
+      toUser = rawEvent.taker?.user;
       break;
     case 'transfer':
       // Prefer from_account/to_account objects, fallback to direct addresses
-      fromAddress = raw.from_account?.address || (raw as any).from_address;
-      toAddress = raw.to_account?.address || (raw as any).to_address;
-      fromUser = raw.from_account?.user;
-      toUser = raw.to_account?.user;
+      fromAddress =
+        rawEvent.from_account?.address || (rawEvent as any).from_address;
+      toAddress = rawEvent.to_account?.address || (rawEvent as any).to_address;
+      fromUser = rawEvent.from_account?.user;
+      toUser = rawEvent.to_account?.user;
       break;
     default:
       console.warn(
-        `Filtering event: Unsupported event_type (${raw.event_type}). Cannot map accounts reliably.`
+        `Filtering event: Unsupported event_type (${rawEvent.event_type}). Cannot map accounts reliably.`
       );
       return null;
   }
@@ -96,11 +118,11 @@ function mapRawEventToActivityEvent(
   // Validate required addresses were found
   if (!fromAddress || !toAddress) {
     console.warn(
-      `Filtering event (${raw.event_type}): Could not determine required from_address OR to_address.`,
+      `Filtering event (${rawEvent.event_type}): Could not determine required from_address OR to_address.`,
       {
         from_addr_found: fromAddress,
         to_addr_found: toAddress,
-        raw_event: raw, // Log raw event for debugging
+        raw_event: rawEvent, // Log raw event for debugging
       }
     );
     return null;
@@ -120,9 +142,9 @@ function mapRawEventToActivityEvent(
   let payment: ActivityEvent['payment'] | null = null;
   let quantity: ActivityEvent['quantity'] | null = null;
 
-  if (raw.event_type === 'sale') {
+  if (rawEvent.event_type === 'sale') {
     // For sales, expect 'payment' object in raw data
-    const rawPayment = (raw as any).payment;
+    const rawPayment = (rawEvent as any).payment;
     if (
       rawPayment &&
       rawPayment.quantity && // Ensure quantity exists and is non-empty string
@@ -154,17 +176,17 @@ function mapRawEventToActivityEvent(
       );
       return null; // Missing required payment details
     }
-  } else if (raw.event_type === 'transfer') {
+  } else if (rawEvent.event_type === 'transfer') {
     // For transfers, expect top-level 'quantity' (number or string)
     // ActivityEvent requires payment, so transfers might be filtered if payment is null later
-    if (raw.quantity !== undefined && raw.quantity !== null) {
-      const quantityNum = parseInt(String(raw.quantity), 10); // Coerce to string first
+    if (rawEvent.quantity !== undefined && rawEvent.quantity !== null) {
+      const quantityNum = parseInt(String(rawEvent.quantity), 10); // Coerce to string first
       if (!isNaN(quantityNum)) {
         quantity = quantityNum;
       } else {
         console.warn(
           `Filtering transfer event: Invalid quantity format at top level.`,
-          { quantity_raw: raw.quantity }
+          { quantity_raw: rawEvent.quantity }
         );
         return null; // Invalid quantity format
       }
@@ -182,23 +204,23 @@ function mapRawEventToActivityEvent(
   if (quantity === null) {
     // Should have been caught earlier, but double-check
     console.warn(
-      `Filtering event (${raw.event_type}): Quantity validation failed.`
+      `Filtering event (${rawEvent.event_type}): Quantity validation failed.`
     );
     return null;
   }
 
   // --- Construct final validated event ---
   return {
-    event_type: raw.event_type,
-    created_date: raw.event_timestamp,
-    transaction: transaction,
+    event_type: rawEvent.event_type,
+    created_date: rawEvent.event_timestamp,
+    transaction: transactionHash,
     nft: nft,
     payment: payment ?? undefined, // Convert null to undefined for optional field
     from_account: final_from_account,
     to_account: final_to_account,
     quantity: quantity, // Now validated to be non-null number
   };
-}
+};
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -320,30 +342,34 @@ export async function* streamNftEventsByAccount(
               accept: 'application/json',
               'X-API-KEY': apiKey,
             },
-            timeout: 20000, // 20 seconds timeout
+            timeout: 40000, // Increased timeout to 40 seconds
           });
           responseData = response.data;
           requestSuccessful = true;
         } catch (error) {
           attempt++;
-          if (
-            axios.isAxiosError(error) &&
-            error.response?.status === 429 &&
-            attempt < MAX_RETRIES
-          ) {
+          const isAxiosError = axios.isAxiosError(error);
+          const statusCode = isAxiosError ? error.response?.status : null;
+          const shouldRetry =
+            (statusCode === 429 || // Rate limit
+              (statusCode && statusCode >= 500 && statusCode < 600)) && // Server errors (5xx)
+            attempt < MAX_RETRIES;
+
+          if (shouldRetry) {
             yield {
               type: 'progress',
-              message: `Rate limited. Retry attempt ${attempt}/${MAX_RETRIES} after ${RETRY_DELAY / 1000}s...`,
+              message: `OpenSea API Error (${statusCode || 'Unknown'}). Retry attempt ${attempt}/${MAX_RETRIES} after ${RETRY_DELAY / 1000}s...`,
               currentPage: pageCount + 1,
               totalPages: effectiveMaxPages,
               percentage,
-              isRateLimited: true,
+              isRateLimited: statusCode === 429, // Still indicate if it was specifically rate limit
               retryCount: attempt,
               totalEventsSoFar: totalValidEventsSent,
               elapsedTime: Date.now() - startTime,
             };
             await sleep(RETRY_DELAY);
           } else {
+            // If it's not a retryable error or max retries reached, throw it
             throw error;
           }
         }
@@ -352,8 +378,8 @@ export async function* streamNftEventsByAccount(
       if (!requestSuccessful || !responseData) {
         yield {
           type: 'error',
-          error: `Failed to fetch data after ${MAX_RETRIES} attempts (likely rate limit).`,
-          status: 429,
+          error: `Failed to fetch data after ${MAX_RETRIES} attempts (API error or rate limit).`,
+          status: 429, // Defaulting to 429 as likely reason, but could be 5xx
         };
         return;
       }
@@ -361,9 +387,29 @@ export async function* streamNftEventsByAccount(
       const rawEvents: RawOpenSeaEvent[] = responseData.asset_events || [];
 
       // --- Map and Filter ---
-      const validEvents: ActivityEvent[] = rawEvents
-        .map(mapRawEventToActivityEvent) // Map to ActivityEvent | null
-        .filter((event): event is ActivityEvent => event !== null); // Filter out nulls
+      const mappedEvents = rawEvents.map(mapRawEventToActivityEvent);
+      const validEvents: ActivityEvent[] = mappedEvents.filter(
+        (event): event is ActivityEvent => event !== null
+      );
+
+      // --- Sort the validated events chronologically (within the batch) --- START
+      if (validEvents.length > 0) {
+        validEvents.sort((a, b) => {
+          // created_date is a string representation of a timestamp
+          const timestampA = parseInt(a.created_date, 10);
+          const timestampB = parseInt(b.created_date, 10);
+
+          if (isNaN(timestampA) || isNaN(timestampB)) {
+            // Handle cases where created_date might not be a valid number string
+            console.warn(
+              `Sorting warning: Invalid timestamp format encountered (${a.created_date}, ${b.created_date})`
+            );
+            return 0; // Keep original order relative to each other if parse fails
+          }
+          return timestampB - timestampA; // Sort descending (newest first)
+        });
+      }
+      // --- Sort the validated events chronologically (within the batch) --- END
 
       // --- Store Valid Events in MongoDB ---
       if (validEvents.length > 0) {
@@ -401,7 +447,7 @@ export async function* streamNftEventsByAccount(
       if (validEvents.length > 0) {
         yield {
           type: 'chunk',
-          events: validEvents, // Send only valid events
+          events: validEvents, // Send the *sorted* valid events
           pageCount: pageCount + 1,
           totalEvents: totalValidEventsSent, // Report total valid events sent
           currentPage: pageCount + 1,
@@ -442,8 +488,9 @@ export async function* streamNftEventsByAccount(
         message = 'Invalid or unauthorized OpenSea API key.';
       } else if (status === 429) {
         message = 'Rate limited by OpenSea API after retries.';
-      } else if (status >= 500) {
-        message = 'OpenSea API server error.';
+      } else if (status >= 500 && status < 600) {
+        // Check for 5xx range
+        message = 'OpenSea API server error encountered.'; // More specific message
       }
     }
 
