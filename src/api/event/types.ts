@@ -1,4 +1,4 @@
-interface OpenSeaUser {
+export interface OpenSeaUser {
   username: string | null;
 }
 
@@ -7,34 +7,25 @@ export interface OpenSeaAccount {
   user?: OpenSeaUser;
 }
 
-export interface EventNftDetail {
-  identifier: string;
-  collection: string;
-  contract: string;
-  name: string | null;
-  display_image_url: string | null;
-  image_url: string | null;
-}
-
-export interface EventPaymentDetail {
-  quantity: string | null;
-  token_address: string | null;
-  decimals: number | null;
-  symbol: string | null;
-}
-
 export interface RawOpenSeaEvent {
   id?: string;
   event_type: string;
   event_timestamp: string;
-  transaction?: { hash: string };
-  nft?: EventNftDetail;
+  transaction?: string;
+  nft?: {
+    identifier: string;
+    collection: string;
+    contract: string;
+    name: string | null;
+    display_image_url: string | null;
+    image_url: string | null;
+  };
   payment_token?: {
     address: string;
     decimals: number;
     symbol: string;
+    quantity?: string;
   };
-  payment?: EventPaymentDetail;
   maker?: OpenSeaAccount;
   taker?: OpenSeaAccount;
   from_account?: OpenSeaAccount;
@@ -43,15 +34,36 @@ export interface RawOpenSeaEvent {
   quantity?: string;
 }
 
-export interface NFTEvent {
-  id: string;
+export interface ActivityEvent {
   event_type: string;
   created_date: string;
-  transactionHash: string | null;
-  nft: EventNftDetail | null;
-  payment: EventPaymentDetail | null;
-  from_account: OpenSeaAccount | null;
-  to_account: OpenSeaAccount | null;
+  transaction: string;
+  nft: {
+    display_image_url: string;
+    identifier: string;
+    name: string | null;
+    image_url: string;
+    collection: string;
+    contract: string;
+  };
+  payment?: {
+    quantity: string;
+    token_address: string;
+    decimals: string;
+    symbol: string;
+  };
+  from_account: {
+    address: string;
+    user?: {
+      username: string;
+    };
+  };
+  to_account: {
+    address: string;
+    user?: {
+      username: string;
+    };
+  };
   quantity: number;
 }
 
@@ -69,7 +81,7 @@ export interface ProgressStreamMessage {
 
 export interface ChunkStreamMessage {
   type: 'chunk';
-  events: NFTEvent[];
+  events: ActivityEvent[];
   pageCount: number;
   totalEvents: number;
   currentPage: number;
@@ -82,7 +94,6 @@ export interface CompleteStreamMessage {
   type: 'complete';
   totalPages: number;
   totalEvents: number;
-  hasMore: boolean;
   percentage: 100;
   elapsedTime?: number;
 }
