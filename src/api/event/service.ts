@@ -297,18 +297,15 @@ export async function* streamNftEventsByAccount(
       url.searchParams.append('chain', 'ethereum');
       url.searchParams.append('event_type', 'sale');
       url.searchParams.append('event_type', 'transfer');
-      url.searchParams.append('event_type', 'cancel'); // Keep this? Might fail validation often.
+      url.searchParams.append('event_type', 'cancel');
       url.searchParams.append('limit', OPENSEA_LIMIT.toString());
 
       if (nextCursor) {
         url.searchParams.append('next', nextCursor);
       } else if (latestStoredTimestamp !== null) {
-        // *** Apply occurred_after only on the FIRST request (when nextCursor is null) ***
-        url.searchParams.append(
-          'occurred_after',
-          String(latestStoredTimestamp)
-        );
-        console.log(`Applying occurred_after filter: ${latestStoredTimestamp}`);
+        // *** Apply 'after' only on the FIRST request (when nextCursor is null) ***
+        url.searchParams.append('after', String(latestStoredTimestamp)); // Use 'after' parameter
+        console.log(`Applying 'after' filter: ${latestStoredTimestamp}`); // Update log message
       }
 
       const percentage = Math.min(
