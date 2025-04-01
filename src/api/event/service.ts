@@ -8,6 +8,7 @@ import {
   OpenSeaUser,
 } from './types'; // Assuming types.ts is in the same directory
 import { getDb } from '../../lib/db'; // Import getDb
+import { Collection } from 'mongodb'; // Import Collection type
 
 const MAX_PAGES_DEFAULT = 20;
 const OPENSEA_LIMIT = 50; // Max limit for OpenSea events endpoint
@@ -31,7 +32,8 @@ function mapRawEventToActivityEvent(
   if (!raw.transaction) {
     console.warn(
       `Filtering event (${raw.event_type}): Missing transaction hash string.`,
-      { rawId: raw.id }
+      // Conditionally log the full raw event only in development
+      process.env.NODE_ENV === 'development' ? { raw_event: raw } : {}
     );
     return null;
   }
@@ -48,7 +50,7 @@ function mapRawEventToActivityEvent(
   ) {
     console.warn(
       `Filtering event (${raw.event_type}): Missing required NFT fields (identifier, collection, contract, display_image_url, image_url).`,
-      { rawId: raw.id, nft: raw.nft }
+      { nft: raw.nft }
     );
     return null;
   }
@@ -86,8 +88,7 @@ function mapRawEventToActivityEvent(
       break;
     default:
       console.warn(
-        `Filtering event: Unsupported event_type (${raw.event_type}). Cannot map accounts reliably.`,
-        { rawId: raw.id }
+        `Filtering event: Unsupported event_type (${raw.event_type}). Cannot map accounts reliably.`
       );
       return null;
   }
@@ -97,7 +98,6 @@ function mapRawEventToActivityEvent(
     console.warn(
       `Filtering event (${raw.event_type}): Could not determine required from_address OR to_address.`,
       {
-        rawId: raw.id,
         from_addr_found: fromAddress,
         to_addr_found: toAddress,
         raw_event: raw, // Log raw event for debugging
@@ -143,14 +143,14 @@ function mapRawEventToActivityEvent(
       } else {
         console.warn(
           `Filtering sale event: Invalid quantity format in payment object.`,
-          { rawId: raw.id, payment_quantity: rawPayment.quantity }
+          { payment_quantity: rawPayment.quantity }
         );
         return null; // Invalid quantity format
       }
     } else {
       console.warn(
         `Filtering sale event: Missing required fields in payment object.`,
-        { rawId: raw.id, payment_obj: rawPayment }
+        { payment_obj: rawPayment }
       );
       return null; // Missing required payment details
     }
@@ -164,14 +164,15 @@ function mapRawEventToActivityEvent(
       } else {
         console.warn(
           `Filtering transfer event: Invalid quantity format at top level.`,
-          { rawId: raw.id, quantity_raw: raw.quantity }
+          { quantity_raw: raw.quantity }
         );
         return null; // Invalid quantity format
       }
     } else {
-      console.warn(`Filtering transfer event: Missing quantity at top level.`, {
-        rawId: raw.id,
-      });
+      console.warn(
+        `Filtering transfer event: Missing quantity at top level.`,
+        {}
+      );
       return null; // Missing quantity
     }
     // Payment remains null for transfers as it's not present in the raw event
@@ -181,8 +182,7 @@ function mapRawEventToActivityEvent(
   if (quantity === null) {
     // Should have been caught earlier, but double-check
     console.warn(
-      `Filtering event (${raw.event_type}): Quantity validation failed.`,
-      { rawId: raw.id }
+      `Filtering event (${raw.event_type}): Quantity validation failed.`
     );
     return null;
   }
@@ -222,8 +222,41 @@ export async function* streamNftEventsByAccount(
   let totalValidEventsSent = 0; // Track events that pass validation
   const startTime = Date.now();
   const effectiveMaxPages = Math.max(1, maxPages);
+  let latestStoredTimestamp: number | null = null;
 
   try {
+    // --- Get the timestamp of the latest stored event for this account --- START
+    try {
+      const db = getDb();
+      const collection: Collection<ActivityEvent> =
+        db.collection('activityEvents');
+      const latestEvent = await collection.findOne(
+        {
+          $or: [
+            { 'from_account.address': address.toLowerCase() }, // Ensure case-insensitivity if needed
+            { 'to_account.address': address.toLowerCase() },
+          ],
+        },
+        { sort: { created_date: -1 } } // Get the newest event
+      );
+
+      if (latestEvent && typeof latestEvent.created_date === 'number') {
+        latestStoredTimestamp = latestEvent.created_date;
+        console.log(
+          `Found latest stored event timestamp for ${address}: ${latestStoredTimestamp}`
+        );
+      } else {
+        console.log(`No existing events found for ${address}, fetching all.`);
+      }
+    } catch (dbError) {
+      console.error(
+        `DB Error fetching latest event timestamp for ${address}:`,
+        dbError
+      ); // Log error but continue fetching all
+      latestStoredTimestamp = null;
+    }
+    // --- Get the timestamp of the latest stored event for this account --- END
+
     // Initial progress message
     yield {
       type: 'progress',
@@ -247,6 +280,13 @@ export async function* streamNftEventsByAccount(
 
       if (nextCursor) {
         url.searchParams.append('next', nextCursor);
+      } else if (latestStoredTimestamp !== null) {
+        // *** Apply occurred_after only on the FIRST request (when nextCursor is null) ***
+        url.searchParams.append(
+          'occurred_after',
+          String(latestStoredTimestamp)
+        );
+        console.log(`Applying occurred_after filter: ${latestStoredTimestamp}`);
       }
 
       const percentage = Math.min(
