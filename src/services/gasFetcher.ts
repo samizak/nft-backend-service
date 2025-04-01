@@ -3,6 +3,7 @@ dotenv.config();
 
 import axios from 'axios';
 import { env } from 'process';
+import { ethers } from 'ethers';
 
 const INFURA_API_KEY = env.INFURA_API_KEY;
 const INFURA_URL = INFURA_API_KEY
@@ -13,19 +14,53 @@ const MAX_RETRIES = 5;
 const INITIAL_RETRY_DELAY_MS = 5 * 1000;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
-const DEFAULT_GAS_PRICE_WEI = '0x4A817C800';
+const DEFAULT_GAS_PRICE_WEI_HEX = '0x4A817C800';
+const GWEI_UNIT = 1e9;
 
-interface GasPriceInfo {
-  gasPriceWei?: string;
-  lastUpdated?: Date;
-  isDefault?: boolean;
+interface GasPriceData {
+  gasPrices: {
+    currentGasPrice: number;
+  };
+  timestamp: string;
+  isDefault: boolean;
 }
 
-let currentGasPrice: GasPriceInfo = {};
+let currentGasPriceData: GasPriceData | undefined = undefined;
+
 let intervalId: NodeJS.Timeout | null = null;
 let retryTimeoutId: NodeJS.Timeout | null = null;
 let retryCount = 0;
 let isFetching = false;
+
+function weiHexToGwei(weiHex: string): number {
+  try {
+    const weiBigNumber = ethers.toBigInt(weiHex);
+
+    // Use ethers.formatUnits to get a fractional Gwei string
+    const gweiString = ethers.formatUnits(weiBigNumber, 'gwei');
+    // Parse the string into a floating-point number
+    return parseFloat(gweiString);
+  } catch (e) {
+    console.error(`Error converting Wei hex ${weiHex} to Gwei:`, e);
+
+    return NaN;
+  }
+}
+
+function setDefaultGasPriceData() {
+  const defaultGwei = weiHexToGwei(DEFAULT_GAS_PRICE_WEI_HEX);
+  currentGasPriceData = {
+    gasPrices: {
+      currentGasPrice: defaultGwei,
+    },
+    timestamp: new Date().toISOString(),
+    isDefault: true,
+  };
+  console.log(
+    'Set default gas price data:',
+    JSON.stringify(currentGasPriceData)
+  );
+}
 
 async function fetchGasPrice(isRetry: boolean = false) {
   if (isFetching && !isRetry) {
@@ -46,13 +81,8 @@ async function fetchGasPrice(isRetry: boolean = false) {
     console.error(
       'INFURA_API_KEY is not set. Using default gas price if available or empty.'
     );
-    if (!currentGasPrice.lastUpdated) {
-      currentGasPrice = {
-        gasPriceWei: DEFAULT_GAS_PRICE_WEI,
-        lastUpdated: new Date(),
-        isDefault: true,
-      };
-      console.log('Set default gas price due to missing API key.');
+    if (!currentGasPriceData) {
+      setDefaultGasPriceData();
     }
     isFetching = false;
     return;
@@ -76,16 +106,26 @@ async function fetchGasPrice(isRetry: boolean = false) {
     );
 
     if (response.data && response.data.result) {
-      currentGasPrice = {
-        gasPriceWei: response.data.result,
-        lastUpdated: new Date(),
-        isDefault: false,
-      };
-      console.log(
-        'Successfully fetched and updated gas price:',
-        currentGasPrice
-      );
-      retryCount = 0;
+      const gasPriceWeiHex = response.data.result;
+      const currentGwei = weiHexToGwei(gasPriceWeiHex);
+
+      if (!isNaN(currentGwei)) {
+        currentGasPriceData = {
+          gasPrices: {
+            currentGasPrice: currentGwei,
+          },
+          timestamp: new Date().toISOString(),
+          isDefault: false,
+        };
+        console.log(
+          'Successfully fetched and updated gas price data:',
+          JSON.stringify(currentGasPriceData)
+        );
+        retryCount = 0;
+      } else {
+        console.error('Failed to convert fetched gas price to Gwei.');
+        throw new Error('Gas price conversion failed');
+      }
     } else {
       console.warn(
         'Received unexpected data format from Infura:',
@@ -150,18 +190,11 @@ async function fetchGasPrice(isRetry: boolean = false) {
       console.error(
         `Max retries (${MAX_RETRIES}) reached or non-retryable error for gas price. Using default value if available.`
       );
-      if (!currentGasPrice.lastUpdated) {
-        currentGasPrice = {
-          gasPriceWei: DEFAULT_GAS_PRICE_WEI,
-          lastUpdated: new Date(),
-          isDefault: true,
-        };
-        console.log(
-          'Set default gas price after exhausting retries/non-retryable error.'
-        );
+      if (!currentGasPriceData) {
+        setDefaultGasPriceData();
       } else {
         console.log(
-          'Keeping previously fetched gas price after exhausting retries/non-retryable error.'
+          'Keeping previously fetched gas price data after exhausting retries/non-retryable error.'
         );
       }
       retryCount = 0;
@@ -197,6 +230,8 @@ export function stopGasFetcher() {
   console.log('Stopped Gas price fetcher.');
 }
 
-export function getGasPrice(): Readonly<GasPriceInfo> {
-  return { ...currentGasPrice };
+export function getGasPrice(): Readonly<GasPriceData> | undefined {
+  return currentGasPriceData
+    ? JSON.parse(JSON.stringify(currentGasPriceData))
+    : undefined;
 }
