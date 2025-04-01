@@ -10,8 +10,9 @@ export interface OpenSeaAccount {
 export interface RawOpenSeaEvent {
   id?: string;
   event_type: string;
+  order_hash?: string | null;
   event_timestamp: string;
-  transaction?: string;
+  transaction: string | null;
   nft?: {
     identifier: string;
     collection: string;
