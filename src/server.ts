@@ -15,6 +15,7 @@ import { env } from 'process';
 
 import { startPriceFetcher } from './services/priceFetcher';
 import { startGasFetcher } from './services/gasFetcher';
+import { connectToDatabase, disconnectFromDatabase } from './lib/db';
 
 const server = fastify({
   logger: true,
@@ -39,17 +40,43 @@ server.get('/', (request, reply) => {
   reply.send('NFT Backend Service is running!');
 });
 
-const start = async () => {
+async function startServer() {
   try {
     // Start background services
     startPriceFetcher();
     startGasFetcher();
 
     await server.listen({ port: Number(env.PORT) || 8080, host: '0.0.0.0' });
+
+    // Connect to Database *after* other initializations
+    await connectToDatabase();
+
+    // Start background services *after* successful server start and DB connection
   } catch (err) {
     server.log.error(err);
     process.exit(1);
   }
-};
+}
 
-start();
+// Graceful shutdown
+const signals = ['SIGINT', 'SIGTERM'];
+signals.forEach((signal) => {
+  process.on(signal, async () => {
+    console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+    try {
+      // Stop background services first (if applicable)
+      // await stopPriceFetcher(); // Assuming stop functions exist
+      // await stopGasFetcher();
+
+      await disconnectFromDatabase(); // Disconnect DB
+      await server.close(); // Close Fastify server
+      console.log('Server shut down successfully.');
+      process.exit(0);
+    } catch (err) {
+      console.error('Error during graceful shutdown:', err);
+      process.exit(1);
+    }
+  });
+});
+
+startServer();

@@ -7,6 +7,7 @@ import {
   OpenSeaAccount,
   OpenSeaUser,
 } from './types'; // Assuming types.ts is in the same directory
+import { getDb } from '../../lib/db'; // Import getDb
 
 const MAX_PAGES_DEFAULT = 20;
 const OPENSEA_LIMIT = 50; // Max limit for OpenSea events endpoint
@@ -324,7 +325,34 @@ export async function* streamNftEventsByAccount(
         .map(mapRawEventToActivityEvent) // Map to ActivityEvent | null
         .filter((event): event is ActivityEvent => event !== null); // Filter out nulls
 
-      totalValidEventsSent += validEvents.length; // Increment count with valid events
+      // --- Store Valid Events in MongoDB ---
+      if (validEvents.length > 0) {
+        try {
+          const db = getDb();
+          const collection = db.collection<ActivityEvent>('activityEvents');
+          // Use ordered: false to continue inserting even if some fail (e.g., duplicate transaction)
+          const insertResult = await collection.insertMany(validEvents, {
+            ordered: false,
+          });
+          console.log(
+            `Inserted ${insertResult.insertedCount} / ${validEvents.length} events into DB (Page ${pageCount + 1})`
+          );
+        } catch (dbError: any) {
+          // Log DB errors but don't stop the stream for the client
+          // Handle duplicate key errors specifically if needed (error code 11000)
+          if (dbError.code === 11000) {
+            console.warn(
+              `DB Warning: Attempted to insert duplicate event(s) (Page ${pageCount + 1}). Some events might already exist.`,
+              { code: dbError.code, writeErrors: dbError.writeErrors?.length }
+            );
+          } else {
+            console.error('DB Error inserting events:', dbError);
+          }
+          // Optionally, you could yield a specific error/warning message to the client here
+        }
+      }
+
+      totalValidEventsSent += validEvents.length; // Increment count *after* potential DB insert
       const updatedPercentage = Math.min(
         Math.round(((pageCount + 1) / effectiveMaxPages) * 100),
         99
