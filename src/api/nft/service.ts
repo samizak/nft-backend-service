@@ -45,7 +45,7 @@ export const getNftsByAccount = async (
   try {
     do {
       const url = new URL(
-        `https://api.opensea.io/api/v2/chain/ethereum/account/${address}/nfts`
+        `https://api.opensea.io/api/v2/chain/ethereum/account/${address}/nfts?limit=200`
       );
       url.searchParams.append('limit', OPENSEA_LIMIT.toString());
       if (currentNext) {

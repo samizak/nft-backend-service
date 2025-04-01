@@ -7,8 +7,15 @@ export async function getMarketEthPrices(
   reply: FastifyReply
 ) {
   try {
-    const prices = getEthPrices();
-    reply.send(prices);
+    const { lastUpdated, isDefault, ...prices } = getEthPrices();
+
+    const responseData = {
+      ethPrice: prices,
+      lastUpdated: lastUpdated?.toISOString() || new Date(0).toISOString(),
+      isDefault: isDefault ?? true,
+    };
+
+    reply.send(responseData);
   } catch (error) {
     request.log.error('Error retrieving ETH prices:', error);
     reply.code(500).send({ error: 'Internal Server Error' });
