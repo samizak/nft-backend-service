@@ -52,8 +52,8 @@ async function setupIndexes(database: Db): Promise<void> {
     await collection.createIndex({ 'to_account.address': 1 });
     // Index for sorting by date
     await collection.createIndex({ created_date: -1 });
-    // Index for querying by transaction hash
-    await collection.createIndex({ transaction: 1 }, { unique: true }); // Transaction hash should be unique
+    // Index for querying by transaction hash (Allowing duplicates)
+    await collection.createIndex({ transaction: 1 });
     // Index for querying NFT contract + identifier
     await collection.createIndex({ 'nft.contract': 1, 'nft.identifier': 1 });
 

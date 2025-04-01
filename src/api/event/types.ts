@@ -7,6 +7,18 @@ export interface OpenSeaAccount {
   user?: OpenSeaUser;
 }
 
+export interface OpenSeaPaymentToken {
+  symbol: string;
+  address: string;
+  decimals: number;
+}
+
+// Define the structure for the overall API response
+export interface RawOpenSeaApiResponse {
+  next: string | null;
+  asset_events: RawOpenSeaEvent[];
+}
+
 export interface RawOpenSeaEvent {
   id?: string;
   event_type: string;
@@ -37,7 +49,7 @@ export interface RawOpenSeaEvent {
 
 export interface ActivityEvent {
   event_type: string;
-  created_date: string;
+  created_date: number;
   transaction: string;
   nft: {
     display_image_url: string;

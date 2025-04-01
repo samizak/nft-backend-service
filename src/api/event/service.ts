@@ -1,42 +1,46 @@
-import axios, { AxiosError } from 'axios';
-import { env } from 'process';
-import {
-  ActivityEvent,
-  StreamMessage,
-  RawOpenSeaEvent,
-  OpenSeaAccount,
-  OpenSeaUser,
-} from './types'; // Assuming types.ts is in the same directory
-import { getDb } from '../../lib/db'; // Import getDb
-import { Collection } from 'mongodb'; // Import Collection type
+import { RawOpenSeaApiResponse, RawOpenSeaEvent, ActivityEvent } from './types';
+import { getDb } from '../../lib/db';
+import { Collection, Document, WithId } from 'mongodb';
+import axios from 'axios';
+import dotenv from 'dotenv';
 
-const MAX_PAGES_DEFAULT = 20;
-const OPENSEA_LIMIT = 50; // Max limit for OpenSea events endpoint
-const RETRY_DELAY = 5000; // 5 seconds delay for rate limit retry
-const MAX_RETRIES = 5;
-const INTER_PAGE_DELAY = 300;
+dotenv.config();
 
+// --- Constants ---
+const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY || '';
+const OPENSEA_API_BASE_URL = 'https://api.opensea.io/api/v2';
+const OPENSEA_CHAIN = 'ethereum'; // Or load from env if needed
+const OPENSEA_EVENT_TYPES = ['sale', 'transfer', 'cancel']; // Add 'cancel' if you want to store them
+const OPENSEA_LIMIT = 50; // Max allowed by OpenSea is 50 for V2 account events
+const MAX_RETRIES = 5; // Number of retries for rate limits / server errors
+const RETRY_DELAY = 5000; // Delay between retries in milliseconds (5 seconds)
+const INTER_PAGE_DELAY = 300; // Small delay between fetching pages
+const MAX_PAGES_DEFAULT = 20; // Default max pages for background sync
+
+// Helper function to pause execution
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+// --- Mapping Logic --- // (Includes transaction/order_hash fallback)
 const mapRawEventToActivityEvent = (
   rawEvent: RawOpenSeaEvent | null
 ): ActivityEvent | null => {
   if (!rawEvent) return null;
-
-  // Basic validation for essential fields
   if (
     !rawEvent.event_type ||
     !rawEvent.event_timestamp ||
     !rawEvent.nft ||
     !rawEvent.nft.identifier ||
     !rawEvent.nft.contract ||
-    !rawEvent.nft.collection
+    !rawEvent.nft.collection ||
+    !rawEvent.nft.display_image_url ||
+    !rawEvent.nft.image_url
   ) {
     console.log('Filtering event: Missing essential fields.', {
       raw_event: rawEvent,
     });
     return null;
   }
-
-  // --- Transaction / Order Hash Fallback Logic --- START
   let transactionHash = '';
   if (
     rawEvent.transaction &&
@@ -52,295 +56,282 @@ const mapRawEventToActivityEvent = (
     console.log(
       `Using order_hash (${rawEvent.order_hash}) as fallback for event type ${rawEvent.event_type}`
     );
-    transactionHash = rawEvent.order_hash; // Use order_hash if transaction is missing
-  } else {
+    transactionHash = rawEvent.order_hash;
+  } else if (!rawEvent.transaction && !rawEvent.order_hash) {
     console.log(
       `Warning: Event type ${rawEvent.event_type} missing both transaction and order_hash. Using empty string.`
     );
   }
-  // --- Transaction / Order Hash Fallback Logic --- END
-
-  // --- NFT Details (Strict Check - Required by ActivityEvent, except name) ---
-  if (
-    !rawEvent.nft ||
-    !rawEvent.nft.identifier ||
-    !rawEvent.nft.collection ||
-    !rawEvent.nft.contract ||
-    !rawEvent.nft.display_image_url || // Required by ActivityEvent
-    !rawEvent.nft.image_url // Required by ActivityEvent
-  ) {
+  let createdTimestamp: number;
+  try {
+    createdTimestamp = Math.floor(
+      new Date(rawEvent.event_timestamp).getTime() / 1000
+    );
+    if (isNaN(createdTimestamp)) throw new Error('Invalid date format');
+  } catch (e) {
     console.warn(
-      `Filtering event (${rawEvent.event_type}): Missing required NFT fields (identifier, collection, contract, display_image_url, image_url).`,
-      { nft: rawEvent.nft }
+      `Filtering event (${rawEvent.event_type}): Invalid timestamp format.`,
+      { timestamp: rawEvent.event_timestamp, error: e }
     );
     return null;
   }
-
   const nft: ActivityEvent['nft'] = {
     identifier: rawEvent.nft.identifier,
     collection: rawEvent.nft.collection,
     contract: rawEvent.nft.contract,
-    name: rawEvent.nft.name ?? null, // Pass name (or null if missing)
+    name: rawEvent.nft.name ?? null,
     display_image_url: rawEvent.nft.display_image_url,
     image_url: rawEvent.nft.image_url,
   };
-
-  // --- Accounts (Flexible Check - handle object or direct address) ---
-  let fromAddress: string | undefined = undefined;
-  let toAddress: string | undefined = undefined;
-  let fromUser: OpenSeaUser | undefined = undefined;
-  let toUser: OpenSeaUser | undefined = undefined;
-
-  // Determine source accounts based on event type and available fields
+  let fromAddress: string | null | undefined = null;
+  let toAddress: string | null | undefined = null;
   switch (rawEvent.event_type) {
     case 'sale':
-      // Prefer seller/taker objects if available, fallback to direct addresses
       fromAddress = rawEvent.seller?.address || (rawEvent as any).seller;
-      toAddress = rawEvent.taker?.address || (rawEvent as any).buyer; // Note: API uses 'buyer' string sometimes
-      fromUser = rawEvent.seller?.user;
-      toUser = rawEvent.taker?.user;
+      toAddress = rawEvent.taker?.address || (rawEvent as any).buyer;
       break;
     case 'transfer':
-      // Prefer from_account/to_account objects, fallback to direct addresses
+    case 'cancel':
       fromAddress =
         rawEvent.from_account?.address || (rawEvent as any).from_address;
       toAddress = rawEvent.to_account?.address || (rawEvent as any).to_address;
-      fromUser = rawEvent.from_account?.user;
-      toUser = rawEvent.to_account?.user;
       break;
     default:
-      console.warn(
-        `Filtering event: Unsupported event_type (${rawEvent.event_type}). Cannot map accounts reliably.`
-      );
-      return null;
-  }
-
-  // Validate required addresses were found
-  if (!fromAddress || !toAddress) {
-    console.warn(
-      `Filtering event (${rawEvent.event_type}): Could not determine required from_address OR to_address.`,
-      {
-        from_addr_found: fromAddress,
-        to_addr_found: toAddress,
-        raw_event: rawEvent, // Log raw event for debugging
+      fromAddress = rawEvent.from_account?.address || rawEvent.seller?.address;
+      toAddress = rawEvent.to_account?.address || rawEvent.taker?.address;
+      if (!fromAddress && !toAddress) {
+        console.warn(
+          `Filtering event: Unsupported/unmappable event_type (${rawEvent.event_type}) for accounts.`
+        );
+        return null;
       }
+  }
+  if (!fromAddress && !toAddress) {
+    console.warn(
+      `Filtering event (${rawEvent.event_type}): Could not determine from_address OR to_address.`,
+      { raw_event: rawEvent }
     );
     return null;
   }
-
-  // Build final account objects (required by ActivityEvent)
-  const final_from_account: ActivityEvent['from_account'] = {
-    address: fromAddress,
-    ...(fromUser?.username && { user: { username: fromUser.username } }),
+  const fromAccount: ActivityEvent['from_account'] = {
+    address: fromAddress || '0x0000000000000000000000000000000000000000',
   };
-  const final_to_account: ActivityEvent['to_account'] = {
-    address: toAddress,
-    ...(toUser?.username && { user: { username: toUser.username } }),
+  const toAccount: ActivityEvent['to_account'] = {
+    address: toAddress || '0x0000000000000000000000000000000000000000',
   };
-
-  // --- Payment & Quantity (Revised Logic) ---
   let payment: ActivityEvent['payment'] | null = null;
   let quantity: ActivityEvent['quantity'] | null = null;
-
   if (rawEvent.event_type === 'sale') {
-    // For sales, expect 'payment' object in raw data
     const rawPayment = (rawEvent as any).payment;
     if (
       rawPayment &&
-      rawPayment.quantity && // Ensure quantity exists and is non-empty string
+      rawPayment.quantity != null &&
       rawPayment.token_address &&
-      rawPayment.symbol &&
-      rawPayment.decimals !== undefined && // Check decimals existence
-      rawPayment.decimals !== null
+      rawPayment.decimals != null &&
+      rawPayment.symbol
     ) {
-      const quantityNum = parseInt(rawPayment.quantity, 10);
-      if (!isNaN(quantityNum)) {
-        quantity = quantityNum;
-        payment = {
-          quantity: rawPayment.quantity, // Keep original string format for payment
-          token_address: rawPayment.token_address,
-          decimals: String(rawPayment.decimals),
-          symbol: rawPayment.symbol,
-        };
-      } else {
-        console.warn(
-          `Filtering sale event: Invalid quantity format in payment object.`,
-          { payment_quantity: rawPayment.quantity }
-        );
-        return null; // Invalid quantity format
-      }
-    } else {
-      console.warn(
-        `Filtering sale event: Missing required fields in payment object.`,
-        { payment_obj: rawPayment }
+      payment = {
+        quantity: String(rawPayment.quantity),
+        token_address: rawPayment.token_address,
+        decimals: String(rawPayment.decimals),
+        symbol: rawPayment.symbol,
+      };
+      const quantityNum = parseInt(
+        String(rawEvent.quantity ?? rawPayment.quantity),
+        10
       );
-      return null; // Missing required payment details
+      quantity = isNaN(quantityNum) ? 1 : quantityNum;
+    } else {
+      console.warn(`Filtering sale event: Missing required payment details.`, {
+        payment_raw: rawPayment,
+      });
+      return null;
     }
-  } else if (rawEvent.event_type === 'transfer') {
-    // For transfers, expect top-level 'quantity' (number or string)
-    // ActivityEvent requires payment, so transfers might be filtered if payment is null later
-    if (rawEvent.quantity !== undefined && rawEvent.quantity !== null) {
-      const quantityNum = parseInt(String(rawEvent.quantity), 10); // Coerce to string first
-      if (!isNaN(quantityNum)) {
-        quantity = quantityNum;
-      } else {
+  } else if (
+    rawEvent.event_type === 'transfer' ||
+    rawEvent.event_type === 'cancel'
+  ) {
+    payment = null;
+    if (rawEvent.quantity != null) {
+      const quantityNum = parseInt(String(rawEvent.quantity), 10);
+      if (!isNaN(quantityNum)) quantity = quantityNum;
+      else {
         console.warn(
-          `Filtering transfer event: Invalid quantity format at top level.`,
+          `Filtering ${rawEvent.event_type} event: Invalid quantity format.`,
           { quantity_raw: rawEvent.quantity }
         );
-        return null; // Invalid quantity format
+        return null;
       }
     } else {
-      console.warn(
-        `Filtering transfer event: Missing quantity at top level.`,
-        {}
-      );
-      return null; // Missing quantity
+      quantity = 1;
     }
-    // Payment remains null for transfers as it's not present in the raw event
+  } else {
+    payment = null;
+    quantity = 1;
   }
-
-  // --- Final Validation (Check if requirements for ActivityEvent are met) ---
   if (quantity === null) {
-    // Should have been caught earlier, but double-check
     console.warn(
       `Filtering event (${rawEvent.event_type}): Quantity validation failed.`
     );
     return null;
   }
-
-  // --- Construct final validated event ---
   return {
     event_type: rawEvent.event_type,
-    created_date: rawEvent.event_timestamp,
+    created_date: createdTimestamp,
     transaction: transactionHash,
-    nft: nft,
-    payment: payment ?? undefined, // Convert null to undefined for optional field
-    from_account: final_from_account,
-    to_account: final_to_account,
-    quantity: quantity, // Now validated to be non-null number
+    nft,
+    payment: payment ?? undefined,
+    from_account: fromAccount,
+    to_account: toAccount,
+    quantity,
   };
 };
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// --- NEW: Fetch Paginated Events from DB ---
+export const getPaginatedAccountEvents = async (
+  address: string,
+  skip: number,
+  limit: number
+): Promise<WithId<ActivityEvent>[]> => {
+  try {
+    const db = getDb();
+    const collection = db.collection<ActivityEvent>('activityEvents');
+    const lowerCaseAddress = address.toLowerCase();
+    const events = await collection
+      .find(
+        {
+          $or: [
+            { 'from_account.address': lowerCaseAddress },
+            { 'to_account.address': lowerCaseAddress },
+          ],
+        },
+        { sort: { created_date: -1 }, skip: skip, limit: limit }
+      )
+      .toArray();
+    return events;
+  } catch (error) {
+    console.error(
+      `Database error fetching paginated events for ${address}:`,
+      error
+    );
+    throw new Error('Failed to retrieve events from database.');
+  }
+};
 
-export async function* streamNftEventsByAccount(
+// --- NEW: Get Total Event Count from DB ---
+export const getAccountEventCount = async (
+  address: string
+): Promise<number> => {
+  try {
+    const db = getDb();
+    const collection = db.collection<ActivityEvent>('activityEvents');
+    const lowerCaseAddress = address.toLowerCase();
+    const count = await collection.countDocuments({
+      $or: [
+        { 'from_account.address': lowerCaseAddress },
+        { 'to_account.address': lowerCaseAddress },
+      ],
+    });
+    return count;
+  } catch (error) {
+    console.error(`Database error counting events for ${address}:`, error);
+    throw new Error('Failed to count events in database.');
+  }
+};
+
+// --- NEW: Background Sync Function ---
+let isSyncing = new Set<string>(); // Basic in-memory lock
+export const syncAccountEventsInBackground = async (
   address: string,
   maxPages: number = MAX_PAGES_DEFAULT
-): AsyncGenerator<StreamMessage> {
-  const apiKey = env.OPENSEA_API_KEY;
-  if (!apiKey) {
-    console.error('OPENSEA_API_KEY is not set.');
-    yield {
-      type: 'error',
-      error: 'Server configuration error: Missing OpenSea API key.',
-      status: 500,
-    };
+): Promise<void> => {
+  const startTime = Date.now();
+  const lowerCaseAddress = address.toLowerCase();
+  console.log(`[Sync:${lowerCaseAddress}] Starting background sync...`);
+  if (isSyncing.has(lowerCaseAddress)) {
+    console.log(
+      `[Sync:${lowerCaseAddress}] Sync already in progress. Skipping.`
+    );
     return;
   }
-
-  let nextCursor: string | null = null;
-  let pageCount = 0;
-  let totalValidEventsSent = 0; // Track events that pass validation
-  const startTime = Date.now();
-  const effectiveMaxPages = Math.max(1, maxPages);
-  let latestStoredTimestamp: number | null = null;
-
+  isSyncing.add(lowerCaseAddress);
   try {
-    // --- Get the timestamp of the latest stored event for this account --- START
+    if (!OPENSEA_API_KEY) {
+      console.error(`[Sync:${lowerCaseAddress}] OpenSea API key is missing.`);
+      return;
+    }
+    const db = getDb();
+    const collection: Collection<ActivityEvent> =
+      db.collection('activityEvents');
+    let latestStoredTimestamp: number | null = null;
     try {
-      const db = getDb();
-      const collection: Collection<ActivityEvent> =
-        db.collection('activityEvents');
       const latestEvent = await collection.findOne(
         {
           $or: [
-            { 'from_account.address': address.toLowerCase() }, // Ensure case-insensitivity if needed
-            { 'to_account.address': address.toLowerCase() },
+            { 'from_account.address': lowerCaseAddress },
+            { 'to_account.address': lowerCaseAddress },
           ],
         },
-        { sort: { created_date: -1 } } // Get the newest event
+        { sort: { created_date: -1 } }
       );
-
-      if (latestEvent && typeof latestEvent.created_date === 'number') {
+      if (latestEvent?.created_date) {
         latestStoredTimestamp = latestEvent.created_date;
         console.log(
-          `Found latest stored event timestamp for ${address}: ${latestStoredTimestamp}`
+          `[Sync:${lowerCaseAddress}] Found latest stored event timestamp: ${latestStoredTimestamp}`
         );
       } else {
-        console.log(`No existing events found for ${address}, fetching all.`);
+        console.log(
+          `[Sync:${lowerCaseAddress}] No existing events found, fetching history.`
+        );
       }
     } catch (dbError) {
       console.error(
-        `DB Error fetching latest event timestamp for ${address}:`,
+        `[Sync:${lowerCaseAddress}] DB Error fetching latest event timestamp:`,
         dbError
-      ); // Log error but continue fetching all
-      latestStoredTimestamp = null;
+      );
     }
-    // --- Get the timestamp of the latest stored event for this account --- END
-
-    // Initial progress message
-    yield {
-      type: 'progress',
-      message: 'Initializing event fetch...',
-      currentPage: 0,
-      totalPages: effectiveMaxPages,
-      percentage: 0,
-      totalEventsSoFar: 0, // Initial count is 0
-      elapsedTime: Date.now() - startTime,
-    };
-
-    do {
-      const url = new URL(
-        `https://api.opensea.io/api/v2/events/accounts/${address}`
-      );
-      url.searchParams.append('chain', 'ethereum');
-      url.searchParams.append('event_type', 'sale');
-      url.searchParams.append('event_type', 'transfer');
-      url.searchParams.append('event_type', 'cancel');
-      url.searchParams.append('limit', OPENSEA_LIMIT.toString());
-
-      if (nextCursor) {
-        url.searchParams.append('next', nextCursor);
-      } else if (latestStoredTimestamp !== null) {
-        // *** Apply 'after' only on the FIRST request (when nextCursor is null) ***
-        url.searchParams.append('after', String(latestStoredTimestamp)); // Use 'after' parameter
-        console.log(`Applying 'after' filter: ${latestStoredTimestamp}`); // Update log message
-      }
-
-      const percentage = Math.min(
-        Math.round((pageCount / effectiveMaxPages) * 100),
-        99
-      );
-      yield {
-        type: 'progress',
-        message: `Fetching page ${pageCount + 1} of ~${effectiveMaxPages}...`,
-        currentPage: pageCount + 1,
-        totalPages: effectiveMaxPages,
-        percentage,
-        totalEventsSoFar: totalValidEventsSent, // Report valid events sent so far
-        elapsedTime: Date.now() - startTime,
-      };
-
+    let nextCursor: string | null = null;
+    let pageCount = 0;
+    let totalValidEventsFetched = 0;
+    const effectiveMaxPages = Math.max(1, maxPages);
+    while (
+      pageCount < effectiveMaxPages &&
+      (nextCursor !== null || pageCount === 0)
+    ) {
       let attempt = 0;
-      let responseData: {
-        asset_events: RawOpenSeaEvent[];
-        next: string | null;
-      } | null = null;
       let requestSuccessful = false;
-
+      let responseData: RawOpenSeaApiResponse | null = null;
       while (attempt < MAX_RETRIES && !requestSuccessful) {
         try {
-          const response = await axios.get<{
-            asset_events: RawOpenSeaEvent[];
-            next: string | null;
-          }>(url.toString(), {
-            headers: {
-              accept: 'application/json',
-              'X-API-KEY': apiKey,
-            },
-            timeout: 40000, // Increased timeout to 40 seconds
-          });
+          console.log(
+            `[Sync:${lowerCaseAddress}] Fetching page ${pageCount + 1} (Attempt ${attempt + 1})...`
+          );
+          const url = new URL(
+            OPENSEA_API_BASE_URL + `/events/accounts/` + address
+          );
+          url.searchParams.append('chain', OPENSEA_CHAIN);
+          OPENSEA_EVENT_TYPES.forEach((type) =>
+            url.searchParams.append('event_type', type)
+          );
+          url.searchParams.append('limit', OPENSEA_LIMIT.toString());
+          if (nextCursor) {
+            url.searchParams.append('next', nextCursor);
+          } else if (latestStoredTimestamp !== null) {
+            url.searchParams.append('after', String(latestStoredTimestamp));
+            console.log(
+              `[Sync:${lowerCaseAddress}] Applying 'after' filter: ${latestStoredTimestamp}`
+            );
+          }
+          const response = await axios.get<RawOpenSeaApiResponse>(
+            url.toString(),
+            {
+              headers: {
+                accept: 'application/json',
+                'X-API-KEY': OPENSEA_API_KEY,
+              },
+              timeout: 40000,
+            }
+          );
           responseData = response.data;
           requestSuccessful = true;
         } catch (error) {
@@ -348,154 +339,92 @@ export async function* streamNftEventsByAccount(
           const isAxiosError = axios.isAxiosError(error);
           const statusCode = isAxiosError ? error.response?.status : null;
           const shouldRetry =
-            (statusCode === 429 || // Rate limit
-              (statusCode && statusCode >= 500 && statusCode < 600)) && // Server errors (5xx)
+            (statusCode === 429 ||
+              (statusCode && statusCode >= 500 && statusCode < 600)) &&
             attempt < MAX_RETRIES;
-
           if (shouldRetry) {
-            yield {
-              type: 'progress',
-              message: `OpenSea API Error (${statusCode || 'Unknown'}). Retry attempt ${attempt}/${MAX_RETRIES} after ${RETRY_DELAY / 1000}s...`,
-              currentPage: pageCount + 1,
-              totalPages: effectiveMaxPages,
-              percentage,
-              isRateLimited: statusCode === 429, // Still indicate if it was specifically rate limit
-              retryCount: attempt,
-              totalEventsSoFar: totalValidEventsSent,
-              elapsedTime: Date.now() - startTime,
-            };
+            console.warn(
+              `[Sync:${lowerCaseAddress}] OpenSea API Error (${statusCode || 'Unknown'}). Retry attempt ${attempt}/${MAX_RETRIES} after ${RETRY_DELAY / 1000}s...`
+            );
             await sleep(RETRY_DELAY);
           } else {
-            // If it's not a retryable error or max retries reached, throw it
-            throw error;
+            console.error(
+              `[Sync:${lowerCaseAddress}] Failed to fetch page ${pageCount + 1} after ${attempt} attempts. Error:`,
+              isAxiosError ? error.message : error
+            );
+            break;
           }
         }
       }
-
       if (!requestSuccessful || !responseData) {
-        yield {
-          type: 'error',
-          error: `Failed to fetch data after ${MAX_RETRIES} attempts (API error or rate limit).`,
-          status: 429, // Defaulting to 429 as likely reason, but could be 5xx
-        };
-        return;
+        console.error(
+          `[Sync:${lowerCaseAddress}] Could not fetch data for page ${pageCount + 1} after ${MAX_RETRIES} attempts. Stopping sync.`
+        );
+        break;
       }
-
-      const rawEvents: RawOpenSeaEvent[] = responseData.asset_events || [];
-
-      // --- Map and Filter ---
+      const rawEvents = responseData.asset_events || [];
+      if (rawEvents.length === 0 && !responseData.next) {
+        console.log(
+          `[Sync:${lowerCaseAddress}] No more raw events found on page ${pageCount + 1}. Ending fetch loop.`
+        );
+        nextCursor = null;
+      }
       const mappedEvents = rawEvents.map(mapRawEventToActivityEvent);
       const validEvents: ActivityEvent[] = mappedEvents.filter(
         (event): event is ActivityEvent => event !== null
       );
-
-      // --- Sort the validated events chronologically (within the batch) --- START
       if (validEvents.length > 0) {
-        validEvents.sort((a, b) => {
-          // created_date is a string representation of a timestamp
-          const timestampA = parseInt(a.created_date, 10);
-          const timestampB = parseInt(b.created_date, 10);
-
-          if (isNaN(timestampA) || isNaN(timestampB)) {
-            // Handle cases where created_date might not be a valid number string
-            console.warn(
-              `Sorting warning: Invalid timestamp format encountered (${a.created_date}, ${b.created_date})`
-            );
-            return 0; // Keep original order relative to each other if parse fails
-          }
-          return timestampB - timestampA; // Sort descending (newest first)
-        });
-      }
-      // --- Sort the validated events chronologically (within the batch) --- END
-
-      // --- Store Valid Events in MongoDB ---
-      if (validEvents.length > 0) {
+        validEvents.sort((a, b) => b.created_date - a.created_date); // Sort newest first
+        totalValidEventsFetched += validEvents.length;
+        console.log(
+          `[Sync:${lowerCaseAddress}] Page ${pageCount + 1}: Mapped ${validEvents.length} valid events.`
+        );
         try {
-          const db = getDb();
-          const collection = db.collection<ActivityEvent>('activityEvents');
-          // Use ordered: false to continue inserting even if some fail (e.g., duplicate transaction)
           const insertResult = await collection.insertMany(validEvents, {
             ordered: false,
           });
           console.log(
-            `Inserted ${insertResult.insertedCount} / ${validEvents.length} events into DB (Page ${pageCount + 1})`
+            `[Sync:${lowerCaseAddress}] Inserted ${insertResult.insertedCount} new events into DB (Page ${pageCount + 1}).`
           );
         } catch (dbError: any) {
-          // Log DB errors but don't stop the stream for the client
-          // Handle duplicate key errors specifically if needed (error code 11000)
           if (dbError.code === 11000) {
+            const we = dbError.writeErrors?.length || 'some';
+            const ic = dbError.result?.nInserted || 0;
             console.warn(
-              `DB Warning: Attempted to insert duplicate event(s) (Page ${pageCount + 1}). Some events might already exist.`,
-              { code: dbError.code, writeErrors: dbError.writeErrors?.length }
+              `[Sync:${lowerCaseAddress}] DB Warning: Attempted insert ${we} duplicates (Page ${pageCount + 1}). ${ic} new events inserted.`
             );
           } else {
-            console.error('DB Error inserting events:', dbError);
+            console.error(
+              `[Sync:${lowerCaseAddress}] DB Error inserting events (Page ${pageCount + 1}):`,
+              dbError
+            );
           }
-          // Optionally, you could yield a specific error/warning message to the client here
         }
+      } else {
+        console.log(
+          `[Sync:${lowerCaseAddress}] Page ${pageCount + 1}: No valid events to insert.`
+        );
       }
-
-      totalValidEventsSent += validEvents.length; // Increment count *after* potential DB insert
-      const updatedPercentage = Math.min(
-        Math.round(((pageCount + 1) / effectiveMaxPages) * 100),
-        99
-      );
-
-      if (validEvents.length > 0) {
-        yield {
-          type: 'chunk',
-          events: validEvents, // Send the *sorted* valid events
-          pageCount: pageCount + 1,
-          totalEvents: totalValidEventsSent, // Report total valid events sent
-          currentPage: pageCount + 1,
-          totalPages: effectiveMaxPages,
-          percentage: updatedPercentage,
-          elapsedTime: Date.now() - startTime,
-        };
-      }
-
       nextCursor = responseData.next || null;
       pageCount++;
-
-      if (nextCursor && pageCount < effectiveMaxPages) {
+      if (!nextCursor) {
+        console.log(
+          `[Sync:${lowerCaseAddress}] No 'next' cursor provided. Ending sync.`
+        );
+      } else if (pageCount < effectiveMaxPages) {
         await sleep(INTER_PAGE_DELAY);
       }
-    } while (nextCursor && pageCount < effectiveMaxPages);
-
-    yield {
-      type: 'complete',
-      totalPages: pageCount,
-      totalEvents: totalValidEventsSent, // Final count of valid events
-      // hasMore logic might need revisiting based on filtering
-      percentage: 100,
-      elapsedTime: Date.now() - startTime,
-    };
-  } catch (error) {
-    console.error('Error fetching or processing events:', error);
-    let status = 500;
-    let message = 'An unexpected error occurred during event fetching.';
-    let details: any = null;
-
-    if (axios.isAxiosError(error)) {
-      status = error.response?.status || 500;
-      details = error.response?.data;
-      if (status === 400) {
-        message = 'Bad request to OpenSea API.';
-      } else if (status === 401 || status === 403) {
-        message = 'Invalid or unauthorized OpenSea API key.';
-      } else if (status === 429) {
-        message = 'Rate limited by OpenSea API after retries.';
-      } else if (status >= 500 && status < 600) {
-        // Check for 5xx range
-        message = 'OpenSea API server error encountered.'; // More specific message
-      }
     }
-
-    yield {
-      type: 'error',
-      error: message,
-      status: status,
-      details: details,
-    };
+    console.log(
+      `[Sync:${lowerCaseAddress}] Sync finished. Fetched ${pageCount} pages, ${totalValidEventsFetched} valid events. Duration: ${Date.now() - startTime}ms`
+    );
+  } catch (error) {
+    console.error(
+      `[Sync:${lowerCaseAddress}] Unexpected error during sync:`,
+      error
+    );
+  } finally {
+    isSyncing.delete(lowerCaseAddress);
+    console.log(`[Sync:${lowerCaseAddress}] Released sync lock.`);
   }
-}
+};
