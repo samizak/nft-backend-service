@@ -1,34 +1,96 @@
 import { ethers } from 'ethers';
+import dotenv from 'dotenv';
 
-// Ensure RPC_URL is set in your environment variables (.env or .env.local)
-const rpcUrl = process.env.INFURA_API_KEY
-  ? `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`
-  : undefined;
+dotenv.config();
 
-if (!rpcUrl) {
-  console.error('Error: INFURA_API_KEY not found in environment variables.');
-  // Optionally handle this error more gracefully depending on your application's needs
-  // For example, you might throw an error or provide a default provider (not recommended for production)
-  process.exit(1); // Exit if the RPC URL isn't configured, as ENS resolution won't work
+const ETH_RPC_URL = process.env.ETH_RPC_URL;
+
+if (!ETH_RPC_URL) {
+  console.error(
+    'FATAL ERROR: ETH_RPC_URL is not defined in the environment variables.'
+  );
+  // Optional: Throw error immediately or let provider creation fail?
+  // For now, we'll let provider creation fail below if URL is missing.
+  // process.exit(1);
 }
 
-const provider = new ethers.JsonRpcProvider(rpcUrl);
+// Initialize provider - potentially reusing instance?
+// For simplicity, creating a new one each time for now.
+// Consider creating a singleton instance if this is called frequently.
+function getProvider(): ethers.JsonRpcProvider {
+  if (!ETH_RPC_URL) {
+    throw new Error('Ethereum RPC URL (ETH_RPC_URL) is not configured.');
+  }
+  // Using JsonRpcProvider for direct connection via URL
+  return new ethers.JsonRpcProvider(ETH_RPC_URL);
+}
 
 /**
- * Resolves an ENS name to an Ethereum address.
- * @param ensName The ENS name to resolve (e.g., 'vitalik.eth').
- * @returns The resolved Ethereum address or null if not found or an error occurs.
+ * Resolves an ENS name (e.g., "vitalik.eth") to its primary Ethereum address.
+ * @param name The ENS name to resolve.
+ * @returns The Ethereum address (0x...) or null if not found or error occurs.
  */
-export const resolveEnsName = async (
-  ensName: string
-): Promise<string | null> => {
+export const resolveEnsName = async (name: string): Promise<string | null> => {
+  console.log(`[ENS Service] Attempting to resolve ENS name: ${name}`);
+  if (!name || !name.includes('.')) {
+    // Basic check if it looks like a name
+    console.warn(`[ENS Service] Invalid input provided as ENS name: ${name}`);
+    return null;
+  }
+
   try {
-    console.log(`Resolving ENS name: ${ensName}`);
-    const address = await provider.resolveName(ensName);
-    console.log(`Resolved address for ${ensName}: ${address}`);
-    return address;
-  } catch (error) {
-    console.error(`Error resolving ENS name ${ensName}:`, error);
-    return null; // Return null on error or if the name doesn't resolve
+    const provider = getProvider();
+    const address = await provider.resolveName(name);
+
+    if (address) {
+      console.log(`[ENS Service] Resolved ${name} to address: ${address}`);
+    } else {
+      console.log(`[ENS Service] Could not resolve ENS name: ${name}`);
+    }
+    return address; // Returns null if not resolved
+  } catch (error: any) {
+    console.error(
+      `[ENS Service] Error resolving ENS name ${name}:`,
+      error.message || error
+    );
+    // Don't throw, return null to indicate resolution failure gracefully to the API handler
+    return null;
+  }
+};
+
+/**
+ * Performs a reverse lookup for an Ethereum address to find its primary ENS name.
+ * @param address The Ethereum address (0x...).
+ * @returns The primary ENS name (e.g., "vitalik.eth") or null if not found or error.
+ */
+export const lookupEnsAddress = async (
+  address: string
+): Promise<string | null> => {
+  console.log(`[ENS Service] Attempting to lookup address: ${address}`);
+  if (!ethers.isAddress(address)) {
+    console.warn(
+      `[ENS Service] Invalid input provided as Ethereum address: ${address}`
+    );
+    return null;
+  }
+
+  try {
+    const provider = getProvider();
+    const name = await provider.lookupAddress(address);
+
+    if (name) {
+      console.log(`[ENS Service] Looked up ${address} to name: ${name}`);
+    } else {
+      console.log(
+        `[ENS Service] Could not lookup ENS name for address: ${address}`
+      );
+    }
+    return name; // Returns null if no primary name is set
+  } catch (error: any) {
+    console.error(
+      `[ENS Service] Error looking up address ${address}:`,
+      error.message || error
+    );
+    return null;
   }
 };
