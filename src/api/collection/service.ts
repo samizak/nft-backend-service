@@ -40,7 +40,10 @@ async function processCollection(
       description: combinedData.description,
       image_url: combinedData.image_url,
       safelist_status: combinedData.safelist_status,
-      stats: combinedData.stats,
+      total_supply: combinedData.total_supply,
+      num_owners: combinedData.num_owners,
+      total_volume: combinedData.total_volume,
+      market_cap: combinedData.market_cap,
     };
     // Create price object only if floor_price is valid (e.g., > 0, adjust as needed)
     const priceData =
