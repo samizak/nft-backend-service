@@ -23,7 +23,7 @@ dotenv.config();
 // --- Configuration & Constants ---
 const QUEUE_NAME = 'portfolio-calculator-queue';
 const CACHE_PREFIX = 'portfolio:summary:';
-const CACHE_TTL_SECONDS = 60 * 15; // Cache portfolio summary for 15 minutes
+const CACHE_TTL_SECONDS = 60 * 60 * 4; // Cache portfolio summary for 4 hours (changed from 15 min)
 
 const MAX_CONCURRENT_COLLECTION_FETCH = 10; // Concurrency for fetching collection data
 const MAX_RETRIES_PER_JOB = 2; // Retries for the portfolio calculation job itself
@@ -265,13 +265,44 @@ export async function addPortfolioJob(data: PortfolioJobData): Promise<void> {
     `[Portfolio Queue] Request to add job for address: ${data.address} (Job ID: ${jobId})`
   );
 
-  // Optional: Check if job with this ID already exists and is active/waiting
-  // const existingJob = await portfolioQueue.getJob(jobId);
-  // if (existingJob && (await existingJob.isActive() || await existingJob.isWaiting())) {
-  //    console.log(`[Portfolio Queue] Job ${jobId} already active/waiting. Skipping.`);
-  //    return; // Don't add duplicates
-  // }
+  // --- Revised Check for Existing Job ---
+  const existingJob = await portfolioQueue.getJob(jobId);
+  if (existingJob) {
+    const state = await existingJob.getState();
+    console.log(
+      `[Portfolio Queue] Existing job ${jobId} found with state: ${state}`
+    ); // Log current state
+    // Define states that indicate the job is effectively pending or active
+    const pendingStates: (string | ReturnType<typeof existingJob.getState>)[] =
+      [
+        'active',
+        'waiting',
+        'delayed',
+        'waiting-children',
+        'prioritized',
+        // Note: 'paused' could also be considered, but typically requires manual intervention
+      ];
 
+    if (pendingStates.includes(state)) {
+      console.log(
+        `[Portfolio Queue] Job ${jobId} already in pending/active state (${state}). Skipping add.`
+      );
+      return; // Don't add duplicates
+    } else {
+      // Job exists but is in a final state (completed, failed)
+      console.log(
+        `[Portfolio Queue] Job ${jobId} found in final state (${state}). Removing before re-adding.`
+      );
+      await existingJob.remove();
+    }
+  } else {
+    console.log(`[Portfolio Queue] No existing job found for ${jobId}.`);
+  }
+  // --------------------------------------
+
+  console.log(
+    `[Portfolio Queue] Proceeding to add job ${jobId} for address: ${data.address}`
+  );
   await portfolioQueue.add('calculate-portfolio', data, {
     jobId: jobId,
     // attempts: 1 // Maybe override default attempts? Make it try only once?
