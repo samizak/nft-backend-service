@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import CollectionMetadata from '../models/CollectionMetadata';
 
 dotenv.config();
 
@@ -42,16 +43,48 @@ interface AlchemyFloorPriceResponse {
 }
 
 /**
- * Fetches basic collection information (name, image, basic stats) from OpenSea API.
- * Uses the /collections/{slug} endpoint.
+ * Fetches basic collection information (name, image, basic stats).
+ * Checks MongoDB cache first, then falls back to OpenSea API.
+ * Saves successful OpenSea results to the cache.
  */
 export async function fetchSingleCollectionInfo(
   slug: string
 ): Promise<BasicCollectionInfo> {
-  const url = `${OPENSEA_API_BASE}/collections/${slug}`;
-  console.log(`[Util Fetch Info] Attempting for: ${slug} at ${url}`);
+  // 1. Check MongoDB Cache first
+  try {
+    const cachedDoc = await CollectionMetadata.findOne({ slug: slug }).lean(); // Use lean for plain JS object
+    // The TTL index handles expiration automatically
+    if (cachedDoc) {
+      console.log(
+        `[Util Fetch Info Cache HIT] Found cached metadata for ${slug}`
+      );
+      // Map DB fields back to BasicCollectionInfo interface (camelCase vs snake_case)
+      return {
+        slug: cachedDoc.slug,
+        name: cachedDoc.name,
+        description: cachedDoc.description,
+        image_url: cachedDoc.imageUrl,
+        safelist_status: cachedDoc.safelistStatus,
+        total_supply: cachedDoc.totalSupply,
+        num_owners: cachedDoc.numOwners,
+        total_volume: cachedDoc.totalVolume,
+        market_cap: cachedDoc.marketCap,
+      };
+    }
+    console.log(
+      `[Util Fetch Info Cache MISS] No cached metadata found for ${slug}`
+    );
+  } catch (dbError) {
+    console.error(
+      `[Util Fetch Info Cache WARN] Error querying cache for ${slug}:`,
+      dbError
+    );
+    // Proceed to fetch from API if cache query fails
+  }
 
-  // Default return structure used on failure
+  // 2. Cache Miss or DB Error: Fetch from OpenSea API
+  console.log(`[Util Fetch Info API] Fetching from OpenSea for: ${slug}`);
+  const url = `${OPENSEA_API_BASE}/collections/${slug}`;
   const defaultReturn: BasicCollectionInfo = {
     slug: slug,
     name: null,
@@ -65,7 +98,7 @@ export async function fetchSingleCollectionInfo(
   };
 
   if (!OPENSEA_API_KEY) {
-    console.error('[Util Fetch Info] OpenSea API Key is missing.');
+    console.error('[Util Fetch Info API] OpenSea API Key is missing.');
     return defaultReturn;
   }
 
@@ -82,13 +115,13 @@ export async function fetchSingleCollectionInfo(
       const collectionData = response.data;
       if (!collectionData) {
         console.warn(
-          `[Util Fetch Info] No collection data object in response for slug: ${slug}`
+          `[Util Fetch Info API] No collection data object in response for slug: ${slug}`
         );
         return defaultReturn;
       }
 
-      // Success - return the data
-      return {
+      // 3. Prepare data for DB and return
+      const fetchedInfo: BasicCollectionInfo = {
         slug: slug,
         name: collectionData.name ?? null,
         description: collectionData.description ?? null,
@@ -107,6 +140,41 @@ export async function fetchSingleCollectionInfo(
         market_cap:
           collectionData.market_cap ?? collectionData.stats?.market_cap ?? 0,
       };
+
+      // 4. Save successful fetch to MongoDB Cache (non-blocking)
+      console.log(
+        `[Util Fetch Info API] Success for ${slug}. Saving to cache...`
+      );
+      CollectionMetadata.findOneAndUpdate(
+        { slug: slug },
+        {
+          // Map BasicCollectionInfo fields to DB schema fields
+          name: fetchedInfo.name,
+          description: fetchedInfo.description,
+          imageUrl: fetchedInfo.image_url,
+          safelistStatus: fetchedInfo.safelist_status,
+          totalSupply: fetchedInfo.total_supply,
+          numOwners: fetchedInfo.num_owners,
+          totalVolume: fetchedInfo.total_volume,
+          marketCap: fetchedInfo.market_cap,
+          // slug is used for matching, timestamps updated automatically
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true } // Create if not exists, update if exists
+      )
+        .exec()
+        .then(() => {
+          console.log(
+            `[Util Fetch Info Cache] Successfully cached metadata for ${slug}`
+          );
+        })
+        .catch((saveError: Error) => {
+          console.error(
+            `[Util Fetch Info Cache WARN] Failed to save metadata to cache for ${slug}:`,
+            saveError
+          );
+        }); // Don't await this, let it run in background
+
+      return fetchedInfo; // Return the freshly fetched data
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
@@ -115,30 +183,31 @@ export async function fetchSingleCollectionInfo(
         delay = Math.min(delay, MAX_RETRY_DELAY_MS);
 
         console.warn(
-          `[Util Fetch Info WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${slug}. Status: ${status || 'N/A'}. Message: ${error.message}`
+          `[Util Fetch Info API WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${slug}. Status: ${status || 'N/A'}. Message: ${error.message}`
         );
 
         if (status === 429) {
-          let waitTime = delay; // Default exponential backoff delay
+          let waitTime = delay;
           if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
-            const headerWaitMs = Number(retryAfterHeader) * 1000 + 200; // Header delay + buffer
-            // Take the max of calculated backoff and header, but cap at 25 seconds
-            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000); // Cap at 25000 ms
+            const headerWaitMs = Number(retryAfterHeader) * 1000 + 200;
+            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000);
           }
+          waitTime = Math.max(waitTime, INITIAL_RETRY_DELAY_MS);
+
           if (attempt < MAX_RETRIES) {
             console.log(
               `   Rate limit hit (OS Info). Retrying after ${waitTime / 1000}s... (Header was: ${retryAfterHeader ?? 'N/A'})`
             );
             await new Promise((resolve) => setTimeout(resolve, waitTime));
-            continue; // Go to next attempt
+            continue;
           }
         } else if (status === 404) {
           console.warn(
-            `   Collection ${slug} not found (404). Returning default.`
+            `   Collection ${slug} not found (404) via API. Returning default.`
           );
+          // TODO: Maybe cache the 404 result briefly?
           return defaultReturn;
         } else if (status && status >= 500) {
-          // Retry on server errors
           if (attempt < MAX_RETRIES) {
             console.log(
               `   Server error (${status}). Retrying after ${delay / 1000}s...`
@@ -147,28 +216,25 @@ export async function fetchSingleCollectionInfo(
             continue;
           }
         } else {
-          // Other client errors (400, 401, 403 etc.) or unknown errors - don't retry
           console.error(
-            `   Non-retryable Axios error. Status: ${status || 'N/A'}. Returning default.`
+            `   Non-retryable Axios error on API fetch. Status: ${status || 'N/A'}. Returning default.`
           );
           return defaultReturn;
         }
       } else {
-        // Non-Axios error - don't retry
         console.error(
-          `[Util Fetch Info Error] Non-Axios error for ${slug}:`,
+          `[Util Fetch Info API Error] Non-Axios error for ${slug}:`,
           error
         );
         return defaultReturn;
       }
-      // If loop finishes after max retries on retryable errors
       console.error(
-        `[Util Fetch Info Error] Max retries (${MAX_RETRIES}) reached for ${slug}. Returning default.`
+        `[Util Fetch Info API Error] Max retries (${MAX_RETRIES}) reached for ${slug}. Returning default.`
       );
-    }
+    } // End catch
   } // End for loop
 
-  return defaultReturn; // Should only be reached if max retries hit
+  return defaultReturn; // Should only be reached if max retries hit on API fetch
 }
 
 const sleep = (ms: number): Promise<void> =>
@@ -235,11 +301,12 @@ export async function fetchAlchemyFloorPriceInternal(
 
         if (status === 429) {
           let waitTime = delay;
-          // Apply same capping logic, assuming Alchemy might send Retry-After
           if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
             const headerWaitMs = Number(retryAfterHeader) * 1000 + 200;
-            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000); // Cap at 25s
+            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000);
           }
+          waitTime = Math.max(waitTime, INITIAL_RETRY_DELAY_MS);
+
           if (attempt < MAX_RETRIES) {
             console.log(
               `   Rate limit hit (Alchemy Floor). Retrying after ${waitTime / 1000}s... (Header was: ${retryAfterHeader ?? 'N/A'})`
