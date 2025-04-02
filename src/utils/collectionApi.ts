@@ -120,13 +120,15 @@ export async function fetchSingleCollectionInfo(
         );
 
         if (status === 429) {
-          let waitTime = delay;
+          let waitTime = delay; // Default exponential backoff delay
           if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
-            waitTime = Math.max(delay, Number(retryAfterHeader) * 1000 + 200); // Use header + buffer
+            const headerWaitMs = Number(retryAfterHeader) * 1000 + 200; // Header delay + buffer
+            // Take the max of calculated backoff and header, but cap at 25 seconds
+            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000); // Cap at 25000 ms
           }
           if (attempt < MAX_RETRIES) {
             console.log(
-              `   Rate limit hit. Retrying after ${waitTime / 1000}s...`
+              `   Rate limit hit (OS Info). Retrying after ${waitTime / 1000}s... (Header was: ${retryAfterHeader ?? 'N/A'})`
             );
             await new Promise((resolve) => setTimeout(resolve, waitTime));
             continue; // Go to next attempt
@@ -235,13 +237,15 @@ async function fetchNFTGOFloorPriceInternal(
         );
 
         if (status === 429) {
-          let waitTime = delay;
+          let waitTime = delay; // Default exponential backoff delay
           if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
-            waitTime = Math.max(delay, Number(retryAfterHeader) * 1000 + 200);
+            const headerWaitMs = Number(retryAfterHeader) * 1000 + 200; // Header delay + buffer
+            // Take the max of calculated backoff and header, but cap at 25 seconds
+            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000); // Cap at 25000 ms
           }
           if (attempt < MAX_RETRIES) {
             console.log(
-              `   Rate limit hit. Retrying after ${waitTime / 1000}s...`
+              `   Rate limit hit (NFTGO Floor). Retrying after ${waitTime / 1000}s... (Header was: ${retryAfterHeader ?? 'N/A'})`
             );
             await new Promise((resolve) => setTimeout(resolve, waitTime));
             continue;
