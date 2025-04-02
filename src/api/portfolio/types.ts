@@ -9,6 +9,7 @@ export interface PortfolioCollectionBreakdown {
   // Add optional USD value if ETH price is available
   floorPriceUsd?: number;
   totalValueUsd?: number;
+  safelistStatus: string | null;
 }
 
 export interface PortfolioSummaryData {
