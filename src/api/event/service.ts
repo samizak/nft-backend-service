@@ -246,31 +246,44 @@ export const getAccountEventCount = async (
   }
 };
 
-// --- NEW: Background Sync Function using Mongoose ---
-let isSyncing = new Set<string>(); // Basic in-memory lock
+// In-memory lock to prevent concurrent syncs for the same address
+const isSyncing = new Set<string>();
 
-export const syncAccountEventsInBackground = async (
-  address: string,
-  maxPages: number = MAX_PAGES_DEFAULT
-): Promise<void> => {
-  const startTime = Date.now();
+// Export a function to check the sync status
+export function checkSyncStatus(address: string): 'syncing' | 'idle' {
+  return isSyncing.has(address.toLowerCase()) ? 'syncing' : 'idle';
+}
+
+export async function syncAccountEventsInBackground(address: string) {
   const lowerCaseAddress = address.toLowerCase();
-
   if (isSyncing.has(lowerCaseAddress)) {
     console.log(
-      `[Sync:${lowerCaseAddress}] Sync already in progress. Skipping.`
+      `[Event Service Sync] Sync already in progress for ${lowerCaseAddress}, skipping.`
     );
     return;
   }
+
+  if (!OPENSEA_API_KEY) {
+    console.error(
+      `[Event Service Sync] OPENSEA_API_KEY is missing or empty. Cannot start sync for ${lowerCaseAddress}.`
+    );
+    return;
+  }
+
   isSyncing.add(lowerCaseAddress);
-  console.log(`[Sync:${lowerCaseAddress}] Starting background sync...`);
+  console.log(
+    `[Event Service Sync] Starting background sync for ${lowerCaseAddress}...`
+  );
 
   try {
+    // --- Restore Core Fetching Logic ---
     let nextCursor: string | null = null;
     let pagesFetched = 0;
     let totalEventsProcessed = 0;
     let rateLimitRetryCount = 0;
     let keepFetching = true;
+    const startTime = Date.now();
+    const maxPages = MAX_PAGES_DEFAULT;
 
     // Get the timestamp of the most recent event stored for this account
     const latestEvent = await ActivityEventModel.findOne({
@@ -283,17 +296,22 @@ export const syncAccountEventsInBackground = async (
       .select({ created_date: 1 })
       .lean();
 
-    const occurredAfter = latestEvent ? latestEvent.created_date : null;
+    // Note: API uses occurred_after (seconds), DB uses created_date (ms)
+    const occurredAfter = latestEvent
+      ? Math.floor(latestEvent.created_date / 1000)
+      : null;
+
     if (occurredAfter) {
       console.log(
-        `[Sync:${lowerCaseAddress}] Found latest event at timestamp ${occurredAfter}. Fetching events after this time.`
+        `[Event Service Sync] Found latest event at timestamp ${latestEvent?.created_date}. Fetching events after ${occurredAfter} (seconds).`
       );
     }
 
+    // *** The Main Fetch Loop ***
     while (keepFetching && pagesFetched < maxPages) {
       pagesFetched++;
       console.log(
-        `[Sync:${lowerCaseAddress}] Fetching page ${pagesFetched} ${nextCursor ? 'with cursor ' + nextCursor : ''}`
+        `[Event Service Sync] Fetching page ${pagesFetched} ${nextCursor ? 'with cursor ' + nextCursor : ''}`
       );
 
       try {
@@ -308,10 +326,10 @@ export const syncAccountEventsInBackground = async (
           url.searchParams.append('next', nextCursor);
         }
         if (occurredAfter) {
-          // OpenSea API uses seconds for timestamp filtering
           url.searchParams.append('occurred_after', String(occurredAfter));
         }
 
+        // Make the API call
         const response = await axios.get<RawOpenSeaApiResponse>(
           url.toString(),
           {
@@ -319,7 +337,7 @@ export const syncAccountEventsInBackground = async (
               accept: 'application/json',
               'x-api-key': OPENSEA_API_KEY,
             },
-            timeout: 15000,
+            timeout: 15000, // Use FETCH_TIMEOUT_MS constant?
           }
         );
 
@@ -329,20 +347,20 @@ export const syncAccountEventsInBackground = async (
 
         if (rawEvents.length === 0) {
           console.log(
-            `[Sync:${lowerCaseAddress}] Page ${pagesFetched}: No more events returned by API.`
+            `[Event Service Sync] Page ${pagesFetched}: No more new events returned by API.`
           );
           keepFetching = false;
         } else {
           console.log(
-            `[Sync:${lowerCaseAddress}] Page ${pagesFetched}: Received ${rawEvents.length} raw events.`
+            `[Event Service Sync] Page ${pagesFetched}: Received ${rawEvents.length} raw events.`
           );
 
           // Map and filter events
           const mappedEvents = rawEvents
             .map(mapRawEventToActivityEvent)
-            .filter((e) => e !== null) as ActivityEvent[];
+            .filter((e) => e !== null) as ActivityEvent[]; // Filter out nulls
           console.log(
-            `[Sync:${lowerCaseAddress}] Page ${pagesFetched}: Mapped to ${mappedEvents.length} valid activity events.`
+            `[Event Service Sync] Page ${pagesFetched}: Mapped to ${mappedEvents.length} valid activity events.`
           );
 
           totalEventsProcessed += mappedEvents.length;
@@ -352,24 +370,26 @@ export const syncAccountEventsInBackground = async (
             const bulkOps = mappedEvents.map((event) => ({
               updateOne: {
                 filter: {
+                  // Define a unique key for upsert
                   transaction: event.transaction,
                   event_type: event.event_type,
                   'nft.identifier': event.nft.identifier,
-                }, // Use a reliable unique key combo
+                  // Add more fields if needed for uniqueness, e.g., log_index
+                },
                 update: { $set: event },
                 upsert: true,
               },
             }));
 
             console.log(
-              `[Sync:${lowerCaseAddress}] Attempting bulkWrite with ${bulkOps.length} operations...`
+              `[Event Service Sync] Attempting bulkWrite with ${bulkOps.length} operations...`
             );
             const bulkResult = await ActivityEventModel.bulkWrite(
-              bulkOps as any[],
-              { ordered: false }
-            ); // Cast needed sometimes, unordered is faster
+              bulkOps as any[], // Cast might be needed depending on TS/Mongoose setup
+              { ordered: false } // Unordered is faster, continues on error
+            );
             console.log(
-              `[Sync:${lowerCaseAddress}] BulkWrite complete. Upserted: ${bulkResult.upsertedCount}, Matched: ${bulkResult.matchedCount}, Modified: ${bulkResult.modifiedCount}`
+              `[Event Service Sync] BulkWrite complete. Upserted: ${bulkResult.upsertedCount}, Matched: ${bulkResult.matchedCount}, Modified: ${bulkResult.modifiedCount}`
             );
           }
         }
@@ -377,61 +397,69 @@ export const syncAccountEventsInBackground = async (
         // Stop if no next cursor
         if (!nextCursor) {
           console.log(
-            `[Sync:${lowerCaseAddress}] No next cursor provided by API. Ending fetch.`
+            `[Event Service Sync] No next cursor provided by API. Ending fetch.`
           );
           keepFetching = false;
         }
 
         // Add delay between pages if continuing
         if (keepFetching) {
-          await sleep(INTER_PAGE_DELAY);
+          await sleep(INTER_PAGE_DELAY); // Ensure sleep and INTER_PAGE_DELAY are defined
         }
       } catch (error) {
+        // --- Handle Axios errors within the loop ---
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;
           if (status === 429 || status === 503 || status === 504) {
             // Rate limit or server unavailable
             rateLimitRetryCount++;
             if (rateLimitRetryCount <= MAX_RETRIES) {
-              const delay = RETRY_DELAY * Math.pow(2, rateLimitRetryCount - 1); // Exponential backoff
+              // Use MAX_RETRIES constant
+              const delay = RETRY_DELAY * Math.pow(2, rateLimitRetryCount - 1); // Ensure RETRY_DELAY is defined
               console.warn(
-                `[Sync:${lowerCaseAddress}] Rate limited or server error (Status ${status}). Retrying attempt ${rateLimitRetryCount}/${MAX_RETRIES} after ${delay}ms...`
+                `[Event Service Sync] Rate limited/server error (Status ${status}) on page ${pagesFetched}. Retrying attempt ${rateLimitRetryCount}/${MAX_RETRIES} after ${delay}ms...`
               );
               await sleep(delay);
-              pagesFetched--; // Decrement to retry the same page
+              pagesFetched--; // Decrement page counter to retry the same page
             } else {
               console.error(
-                `[Sync:${lowerCaseAddress}] Max retries (${MAX_RETRIES}) exceeded for rate limit/server error. Stopping sync.`
+                `[Event Service Sync] Max retries (${MAX_RETRIES}) exceeded for rate limit/server error on page ${pagesFetched}. Stopping sync.`
               );
-              keepFetching = false;
+              keepFetching = false; // Stop sync
             }
           } else {
+            // Other non-retryable Axios error
             console.error(
-              `[Sync:${lowerCaseAddress}] Axios error fetching page ${pagesFetched}: Status ${status || 'N/A'} - ${error.message}`
+              `[Event Service Sync] Axios error fetching page ${pagesFetched}: Status ${status || 'N/A'} - ${error.message}`
             );
-            keepFetching = false; // Stop on other errors
+            keepFetching = false; // Stop sync
           }
         } else {
+          // Non-Axios error during page fetch
           console.error(
-            `[Sync:${lowerCaseAddress}] Non-Axios error fetching page ${pagesFetched}:`,
+            `[Event Service Sync] Non-Axios error fetching page ${pagesFetched}:`,
             error
           );
-          keepFetching = false; // Stop on unexpected errors
+          keepFetching = false; // Stop sync
         }
-      }
-    }
+      } // End catch block for page fetch error
+    } // End while loop
+    // --- End of Restored Logic ---
 
     const duration = (Date.now() - startTime) / 1000;
     console.log(
-      `[Sync:${lowerCaseAddress}] Sync finished in ${duration.toFixed(2)}s. Fetched ${pagesFetched} pages, Processed approx ${totalEventsProcessed} new/updated events.`
+      `[Event Service Sync] Sync finished for ${lowerCaseAddress} in ${duration.toFixed(2)}s. Fetched ${pagesFetched} pages, Processed approx ${totalEventsProcessed} new/updated events.`
     );
   } catch (error) {
+    // Catch errors from outside the main loop (e.g., findOne query)
     console.error(
-      `[Sync:${lowerCaseAddress}] Unhandled error during sync process:`,
+      `[Event Service Sync] Unhandled error during sync process for ${lowerCaseAddress}:`,
       error
     );
   } finally {
     isSyncing.delete(lowerCaseAddress);
-    console.log(`[Sync:${lowerCaseAddress}] Released sync lock.`);
+    console.log(
+      `[Event Service Sync] Released sync lock for ${lowerCaseAddress}.`
+    );
   }
-};
+}
