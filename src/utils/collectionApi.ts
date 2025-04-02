@@ -16,12 +16,10 @@ export interface BasicCollectionInfo {
   description: string | null;
   image_url: string | null;
   safelist_status: string | null;
-  stats: {
-    total_supply: number;
-    num_owners: number;
-    total_volume: number; // Make sure this corresponds to a field OpenSea provides
-    market_cap: number; // Make sure this corresponds to a field OpenSea provides
-  };
+  total_supply: number;
+  num_owners: number;
+  total_volume: number;
+  market_cap: number;
 }
 
 // Floor price data structure from NFTGO
@@ -47,16 +45,27 @@ export async function fetchSingleCollectionInfo(
   slug: string
 ): Promise<BasicCollectionInfo> {
   const url = `${OPENSEA_API_BASE}/collections/${slug}`;
-  console.log(`[Util Fetch Info] Attempting for: ${slug}`);
+  console.log(`[Util Fetch Info] Attempting for: ${slug} at ${url}`);
 
   if (!OPENSEA_API_KEY) {
     console.error('[Util Fetch Info] OpenSea API Key is missing.');
-    throw new Error('OpenSea API Key is missing.');
+    // Return default structure on configuration error
+    return {
+      slug: slug,
+      name: null,
+      description: null,
+      image_url: null,
+      safelist_status: null,
+      total_supply: 0,
+      num_owners: 0,
+      total_volume: 0,
+      market_cap: 0,
+    };
   }
 
   try {
-    // Explicitly type the expected response structure from OpenSea
-    const response = await axios.get<{ collection: any }>(url, {
+    const response = await axios.get<any>(url, {
+      // Use <any> for now, log the structure
       headers: {
         Accept: 'application/json',
         'X-API-KEY': OPENSEA_API_KEY,
@@ -64,74 +73,102 @@ export async function fetchSingleCollectionInfo(
       timeout: FETCH_TIMEOUT_MS,
     });
 
-    const collection = response.data?.collection;
-    if (!collection) {
+    // --- Log the actual response structure ---
+    console.log(
+      `[Util Fetch Info] Raw OpenSea response data for ${slug}:`,
+      JSON.stringify(response.data, null, 2)
+    );
+    // -----------------------------------------
+
+    // Access data based on observed structure (adjust paths as needed after logging)
+    // Assuming the relevant data might be directly on response.data based on V2 docs examples
+    const collectionData = response.data; // Adjust if nested under 'collection'
+
+    if (!collectionData) {
       console.warn(
-        `[Util Fetch Info] No collection data found for slug: ${slug}`
+        `[Util Fetch Info] No collection data object found in response for slug: ${slug}`
       );
-      // Return a default structure consistent with BasicCollectionInfo
       return {
         slug: slug,
         name: null,
         description: null,
         image_url: null,
         safelist_status: null,
-        stats: {
-          total_supply: 0,
-          num_owners: 0,
-          total_volume: 0, // Ensure default matches type
-          market_cap: 0, // Ensure default matches type
-        },
+        total_supply: 0,
+        num_owners: 0,
+        total_volume: 0,
+        market_cap: 0,
       };
     }
 
     // Construct the BasicCollectionInfo object safely
     return {
       slug: slug,
-      name: collection.name ?? null,
-      description: collection.description ?? null,
-      image_url: collection.image_url ?? null,
-      safelist_status: collection.safelist_request_status ?? null,
-      stats: {
-        // Ensure these paths exist in the actual OpenSea response
-        total_supply: collection.stats?.total_supply ?? 0,
-        num_owners: collection.stats?.num_owners ?? 0,
-        // Check OpenSea docs/response for correct total_volume and market_cap paths
-        total_volume: collection.stats?.total_volume ?? 0,
-        market_cap: collection.stats?.market_cap ?? 0,
-      },
+      name: collectionData.name ?? null,
+      description: collectionData.description ?? null,
+      image_url: collectionData.image_url ?? null,
+      safelist_status: collectionData.safelist_request_status ?? null, // Check this path
+      // Access stats safely, adjust paths based on logged response
+      total_supply:
+        collectionData.total_supply ?? collectionData.stats?.total_supply ?? 0,
+      num_owners:
+        collectionData.num_owners ?? collectionData.stats?.num_owners ?? 0,
+      total_volume:
+        collectionData.total_volume ?? collectionData.stats?.total_volume ?? 0,
+      market_cap:
+        collectionData.market_cap ?? collectionData.stats?.market_cap ?? 0,
     };
   } catch (error) {
     if (axios.isAxiosError(error)) {
       console.error(
-        `[Util Fetch Info Error] Axios error for ${slug}: ${error.response?.status} ${error.message}`
+        `[Util Fetch Info Error] Axios error for ${slug}: Status ${error.response?.status}, Message: ${error.message}`,
+        // Log response data if available, might contain error details from API
+        error.response?.data
+          ? `Data: ${JSON.stringify(error.response.data)}`
+          : 'No response data'
       );
-      // Consider specific handling for 404 or other statuses if needed
+
       if (error.response?.status === 404) {
         console.warn(`[Util Fetch Info] Collection ${slug} not found (404).`);
-        // Return default object for 404 as well
-        return {
-          slug: slug,
-          name: null,
-          description: null,
-          image_url: null,
-          safelist_status: null,
-          stats: {
-            total_supply: 0,
-            num_owners: 0,
-            total_volume: 0,
-            market_cap: 0,
-          },
-        };
+      } else {
+        // Log details for other HTTP errors
+        console.error(`[Util Fetch Info] Non-404 HTTP error for ${slug}.`);
       }
+      // Return default object for ANY axios error for now to prevent breaking Promise.allSettled
+      // Consider re-throwing for specific critical errors later if needed
+      return {
+        slug: slug,
+        name: null,
+        description: null,
+        image_url: null,
+        safelist_status: null,
+        total_supply: 0,
+        num_owners: 0,
+        total_volume: 0,
+        market_cap: 0,
+      };
     } else {
+      // Log non-axios errors (network issues, setup problems)
       console.error(
         `[Util Fetch Info Error] Non-Axios error for ${slug}:`,
         error
       );
+      // Re-throwing might be appropriate here as it indicates a fundamental issue
+      // For now, return default to maintain consistency, but review this.
+      return {
+        slug: slug,
+        name: null,
+        description: null,
+        image_url: null,
+        safelist_status: null,
+        total_supply: 0,
+        num_owners: 0,
+        total_volume: 0,
+        market_cap: 0,
+      };
     }
-    // Re-throw other errors to be handled by the caller (worker or API service)
-    throw error;
+    // This part might become unreachable if all paths return default, keep for safety
+    // throw error;
   }
 }
 
@@ -348,8 +385,15 @@ export async function fetchFloorPriceData(
 }
 
 // Placeholder for the main combined fetcher function
-export interface CombinedCollectionData extends BasicCollectionInfo {
+export interface CombinedCollectionData
+  extends Omit<BasicCollectionInfo, 'stats'> {
+  // Omit nested stats
   floor_price: number;
+  // Include flattened stats here
+  total_supply: number;
+  num_owners: number;
+  total_volume: number;
+  market_cap: number;
 }
 
 export async function fetchCollectionData(
@@ -367,23 +411,21 @@ export async function fetchCollectionData(
     pricePromise,
   ]);
 
-  // Process results - prioritizing info, handling price failure
-  const info =
+  // Process results - providing default info if fetch failed
+  const info: BasicCollectionInfo =
     infoResult.status === 'fulfilled'
       ? infoResult.value
-      : ({
+      : {
           slug: slug,
           name: null,
           description: null,
           image_url: null,
           safelist_status: null,
-          stats: {
-            total_supply: 0,
-            num_owners: 0,
-            total_volume: 0,
-            market_cap: 0,
-          },
-        } as BasicCollectionInfo); // Provide default info if fetch failed
+          total_supply: 0,
+          num_owners: 0,
+          total_volume: 0,
+          market_cap: 0,
+        };
 
   const floor_price =
     priceResult.status === 'fulfilled' ? priceResult.value.floor_price : 0; // Default price if fetch failed
@@ -401,8 +443,18 @@ export async function fetchCollectionData(
     );
   }
 
+  // Construct the flattened CombinedCollectionData
   return {
-    ...info,
+    slug: info.slug,
+    name: info.name,
+    description: info.description,
+    image_url: info.image_url,
+    safelist_status: info.safelist_status,
     floor_price: floor_price,
+    // Get stats from the info object
+    total_supply: info.total_supply,
+    num_owners: info.num_owners,
+    total_volume: info.total_volume,
+    market_cap: info.market_cap,
   };
 }

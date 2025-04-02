@@ -65,11 +65,34 @@ export interface CollectionResult {
   market_cap: number;
 }
 
+// Placeholder structure for the nested response item
+// This should align with what processCollection actually returns
+interface CollectionResponseItem {
+  info: BasicCollectionInfo | null; // Assuming BasicCollectionInfo is defined/imported
+  price: { floor_price: number } | null;
+}
+
 export interface BatchCollectionsResponse {
-  data: Record<string, CollectionResult>;
+  // Update the data property to expect the new nested structure or an empty object
+  data: Record<string, CollectionResponseItem | {}>;
 }
 
 export interface BatchCollectionsRequestBody {
   collection_slugs: string[];
   contract_addresses: string[];
+}
+
+// Temporary definition here if not imported, ensure it matches the one in utils
+interface BasicCollectionInfo {
+  slug: string;
+  name: string | null;
+  description: string | null;
+  image_url: string | null;
+  safelist_status: string | null;
+  stats: {
+    total_supply: number;
+    num_owners: number;
+    total_volume: number;
+    market_cap: number;
+  };
 }

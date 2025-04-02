@@ -5,42 +5,56 @@ import { CollectionResult, BatchCollectionsResponse } from './types';
 import {
   fetchCollectionData as fetchCollectionDataUtil,
   CombinedCollectionData,
+  BasicCollectionInfo,
 } from '../../utils/collectionApi';
 
 const MAX_CONCURRENT_REQUESTS = 5;
 
-// --- Main API Service Logic ---
-
-// Helper to adapt the utility function's output to the expected CollectionResult
-function adaptUtilDataToResult(
-  utilData: CombinedCollectionData
-): CollectionResult {
-  return {
-    collection: utilData.slug,
-    floor_price: utilData.floor_price,
-    total_supply: utilData.stats.total_supply,
-    owner_count: utilData.stats.num_owners,
-    total_volume: utilData.stats.total_volume,
-    market_cap: utilData.stats.market_cap,
-  };
+// Define the structure for the API response item
+interface CollectionResponseItem {
+  info: BasicCollectionInfo | null;
+  price: { floor_price: number } | null;
 }
 
-// Updated processCollection using the utility function
+// --- Main API Service Logic ---
+
+// Updated processCollection to return the new structure
 async function processCollection(
   slug: string,
   contractAddress: string
-): Promise<CollectionResult | null> {
+): Promise<CollectionResponseItem | null> {
   console.log(
     `[API Service] Processing collection via util: ${slug} (${contractAddress})`
   );
   try {
-    const combinedData = await fetchCollectionDataUtil(slug, contractAddress);
-    return adaptUtilDataToResult(combinedData);
+    // Call the centralized utility function
+    const combinedData: CombinedCollectionData = await fetchCollectionDataUtil(
+      slug,
+      contractAddress
+    );
+
+    // Separate info and price parts
+    const infoData: BasicCollectionInfo = {
+      slug: combinedData.slug,
+      name: combinedData.name,
+      description: combinedData.description,
+      image_url: combinedData.image_url,
+      safelist_status: combinedData.safelist_status,
+      stats: combinedData.stats,
+    };
+    // Create price object only if floor_price is valid (e.g., > 0, adjust as needed)
+    const priceData =
+      combinedData.floor_price > 0
+        ? { floor_price: combinedData.floor_price }
+        : null;
+
+    return { info: infoData, price: priceData };
   } catch (error) {
     console.error(
       `[API Service] Error fetching collection data for ${slug} using util:`,
       error
     );
+    // Indicate failure by returning null or a specific error structure if preferred
     return null;
   }
 }
@@ -55,7 +69,8 @@ export async function fetchBatchCollectionData(
   }
 
   const limit = pLimit(MAX_CONCURRENT_REQUESTS);
-  const results: Record<string, CollectionResult> = {};
+  // Adjust the type of the results accumulator
+  const results: Record<string, CollectionResponseItem | {}> = {}; // Use {} for failed/empty cases
 
   const tasks = slugs.map((slug, index) => {
     const contractAddress = contractAddresses[index];
@@ -67,27 +82,25 @@ export async function fetchBatchCollectionData(
   taskResults.forEach((result, index) => {
     const slug = slugs[index];
     if (result.status === 'fulfilled' && result.value) {
+      // Successfully processed, store the { info, price } object
       results[slug] = result.value;
     } else {
+      // Failed to process or processCollection returned null
       console.warn(
         `[API Service] Failed to get data for slug: ${slug}. Reason:`,
         result.status === 'rejected'
           ? result.reason
           : 'Processing returned null'
       );
-      results[slug] = {
-        collection: slug,
-        floor_price: 0,
-        total_supply: 0,
-        owner_count: 0,
-        total_volume: 0,
-        market_cap: 0,
-      };
+      // Store an empty object to indicate failure for this slug
+      results[slug] = {};
     }
   });
 
   console.log('[API Service] Finished processing all collections.');
   console.log('[API Service] Final Results:', results);
 
+  // The structure here now matches Record<string, { info?, price? } | {}>
+  // This might require updating BatchCollectionsResponse type definition later
   return { data: results };
 }
