@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import {
   getAccountActivity,
   triggerAccountSync,
@@ -73,10 +73,7 @@ const syncStatusResponseSchema = {
   500: { $ref: 'InternalServerError#' },
 };
 
-async function eventRoutes(
-  fastify: FastifyInstance,
-  options: FastifyPluginOptions
-) {
+async function eventRoutes(fastify: FastifyInstance) {
   // Register reusable schemas
   fastify.addSchema(paginationQuerySchema);
   fastify.addSchema(addressParamSchema);

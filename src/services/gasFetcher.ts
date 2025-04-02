@@ -15,7 +15,6 @@ const INITIAL_RETRY_DELAY_MS = 5 * 1000;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 const DEFAULT_GAS_PRICE_WEI_HEX = '0x4A817C800';
-const GWEI_UNIT = 1e9;
 
 interface GasPriceData {
   gasPrices: {

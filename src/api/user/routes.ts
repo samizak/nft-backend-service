@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { getUserProfile } from './controller';
 
 const profileParamsSchema = {
@@ -9,10 +9,7 @@ const profileParamsSchema = {
   required: ['id'],
 } as const;
 
-async function userRoutes(
-  fastify: FastifyInstance,
-  options: FastifyPluginOptions
-) {
+async function userRoutes(fastify: FastifyInstance) {
   fastify.get(
     '/profile/:id',
     {

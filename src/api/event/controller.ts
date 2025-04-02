@@ -6,8 +6,6 @@ import {
   getAccountEventCount,
   checkSyncStatus, // Import the new status checker
 } from './service';
-import { ActivityEvent } from './types'; // Keep ActivityEvent if needed for response typing
-import { WithId } from 'mongodb';
 
 // Define interfaces for request parameters and query string
 interface AddressParams {
@@ -108,12 +106,10 @@ export const triggerAccountSync = async (
   });
 
   // Immediately return 202 Accepted
-  return reply
-    .code(202)
-    .send({
-      status: 'sync_triggered',
-      message: `Background event sync initiated for ${lowerCaseAddress}.`,
-    });
+  return reply.code(202).send({
+    status: 'sync_triggered',
+    message: `Background event sync initiated for ${lowerCaseAddress}.`,
+  });
 };
 
 // Controller for checking sync status (GET /:address/sync-status)

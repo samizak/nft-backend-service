@@ -1,10 +1,8 @@
 import { Queue, Worker, Job } from 'bullmq';
-import IORedis from 'ioredis';
 import pLimit from 'p-limit';
 import dotenv from 'dotenv';
 
 import redisClient from '../lib/redis';
-import { env } from 'process';
 
 // Import necessary functions and types
 import {

@@ -1,10 +1,7 @@
-import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { getNftsByAccountHandler, getNftsByAccountSchema } from './controller';
 
-async function nftRoutes(
-  fastify: FastifyInstance,
-  options: FastifyPluginOptions
-) {
+async function nftRoutes(fastify: FastifyInstance) {
   // GET /nft/by-account?address=0x...&next=...&maxPages=...
   fastify.get(
     '/by-account',

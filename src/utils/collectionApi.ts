@@ -247,9 +247,6 @@ export async function fetchSingleCollectionInfo(
   return defaultReturn; // Should only be reached if max retries hit on API fetch
 }
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
  * Fetches floor price from Alchemy NFT API.
  * Exported for direct use by the dedicated API endpoint.

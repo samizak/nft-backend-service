@@ -1,13 +1,8 @@
 import { env } from 'process';
-import axios, { AxiosError } from 'axios';
-import redisClient from '../lib/redis';
+import axios from 'axios';
 
 const NFTGO_API_KEY = env.NFTGO_API_KEY || '';
 const NFTGO_API_BASE = 'https://data-api.nftgo.io/eth/v1';
-const CACHE_PREFIX = 'nftgo:floor-price:';
-const CACHE_TTL_SECONDS = 60 * 60; // 1 hour cache
-const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
 interface FloorPrice {
@@ -25,9 +20,6 @@ interface CollectionInfo {
   floor_price: number;
   market_cap: number;
 }
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function fetchNFTGOCollectionInfo(
   contractAddresses: string[]

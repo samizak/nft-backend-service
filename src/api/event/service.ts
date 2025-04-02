@@ -1,6 +1,5 @@
 import { RawOpenSeaApiResponse, RawOpenSeaEvent, ActivityEvent } from './types';
 import ActivityEventModel, { IActivityEvent } from '../../models/ActivityEvent';
-import mongoose from 'mongoose';
 import axios from 'axios';
 import dotenv from 'dotenv';
 
@@ -9,7 +8,6 @@ dotenv.config();
 // --- Constants ---
 const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY || '';
 const OPENSEA_API_BASE_URL = 'https://api.opensea.io/api/v2';
-const OPENSEA_CHAIN = 'ethereum'; // Or load from env if needed
 const OPENSEA_EVENT_TYPES = ['sale', 'transfer', 'cancel']; // Add 'cancel' if you want to store them
 const OPENSEA_LIMIT = 50; // Max allowed by OpenSea is 50 for V2 account events
 const MAX_RETRIES = 5; // Number of retries for rate limits / server errors

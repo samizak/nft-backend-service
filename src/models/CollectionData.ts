@@ -1,4 +1,4 @@
-import { Schema, model, Document, Model, Types } from 'mongoose';
+import { Schema, model, Document, Model } from 'mongoose';
 import { CollectionInfo, PriceData } from '../api/collection/types'; // Import existing types
 
 // Interface extending Mongoose Document for type safety

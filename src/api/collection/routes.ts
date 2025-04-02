@@ -1,14 +1,11 @@
-import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import {
   getBatchCollections,
   getAlchemyFloorPriceHandler,
   getAlchemyFloorPriceSchema,
 } from './controller';
 
-async function collectionRoutes(
-  fastify: FastifyInstance,
-  options: FastifyPluginOptions
-) {
+async function collectionRoutes(fastify: FastifyInstance) {
   // POST /collection/batch-collections
   fastify.post(
     '/batch-collections',

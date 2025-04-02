@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { ethers } from 'ethers';
 import redisClient from '../../lib/redis';
-import { CachedPortfolioResponse, PortfolioSummaryData } from './types';
+import { PortfolioSummaryData } from './types';
 import {
   addPortfolioJob,
   getPortfolioJob,

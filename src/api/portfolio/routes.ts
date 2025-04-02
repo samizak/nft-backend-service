@@ -1,6 +1,5 @@
 import { FastifyInstance } from 'fastify';
 import { getPortfolioSummaryController } from './controller';
-import { ethers } from 'ethers';
 
 // Define schema for the address parameter
 const addressParamSchema = {

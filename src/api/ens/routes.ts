@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 // Removed ethers import if not directly used here anymore
 
 // Import controller functions
@@ -46,18 +46,6 @@ const lookupParamsSchema = {
     address: { type: 'string' }, // Service layer will validate format
   },
   required: ['address'],
-};
-
-const lookupResponseSchema = {
-  200: {
-    type: 'object',
-    properties: {
-      address: { type: 'string' },
-      ensName: { type: 'string' }, // ENS name can be null if not found
-    },
-    required: ['address', 'ensName'], // Actually, ensName isn't required if null
-  },
-  // Define 404/500 responses similar to resolve if needed
 };
 
 // --- Routes Plugin ---

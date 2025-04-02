@@ -1,7 +1,5 @@
 import { Queue, Worker, Job } from 'bullmq';
-import IORedis from 'ioredis';
 import pLimit from 'p-limit';
-import axios from 'axios';
 import dotenv from 'dotenv';
 
 import redisClient from '../lib/redis'; // Use our configured client
