@@ -81,16 +81,16 @@ async function fetchEthPrices(isRetry: boolean = false) {
     });
 
     if (response.data && response.data.ethereum) {
+      const prices = response.data.ethereum;
       currentEthPrices = {
-        ...response.data.ethereum,
-        lastUpdated: new Date(),
+        ...prices,
+        lastUpdated: new Date().toISOString(),
         isDefault: false,
       };
-      console.log(
-        'Successfully fetched and updated Ethereum prices:',
-        currentEthPrices
-      );
       retryCount = 0;
+      console.log(
+        `[Price Service] Updated ETH prices. USD: ${currentEthPrices.usd}, LastUpdated: ${currentEthPrices.lastUpdated}`
+      );
     } else {
       console.warn(
         'Received unexpected data format from CoinGecko:',
@@ -98,52 +98,66 @@ async function fetchEthPrices(isRetry: boolean = false) {
       );
       throw new Error('Unexpected data format from CoinGecko');
     }
-  } catch (error) {
+  } catch (error: any) {
+    // Declare retry variables outside the conditional blocks
     let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount);
     delay = Math.min(delay, MAX_RETRY_DELAY_MS);
-    let shouldRetry = true;
+    let shouldRetry = true; // Assume retry unless explicitly set to false
 
+    console.error(
+      `[Price Service] Error fetching ETH prices (Attempt ${retryCount + 1}):`
+    );
     if (axios.isAxiosError(error)) {
       const status = error.response?.status;
       console.error(
-        'Axios error fetching Ethereum prices from CoinGecko:',
-        status,
-        error.response?.statusText,
-        error.response?.data || error.message
+        ` > Axios Error: Status ${status || 'N/A'}, Message: ${error.message}`,
+        error.response?.data
+          ? `| Data: ${JSON.stringify(error.response.data)}`
+          : ''
       );
 
       if (status === 429) {
+        // Handle Rate Limit
         const retryAfterHeader = error.response?.headers?.['retry-after'];
         if (retryAfterHeader) {
           const retryAfterSeconds = parseInt(retryAfterHeader, 10);
           if (!isNaN(retryAfterSeconds)) {
             delay = Math.max(delay, retryAfterSeconds * 1000);
-            console.log(
-              `Rate limited. Retrying after ${delay / 1000} seconds (from header).`
+            console.warn(
+              `   Retrying after ${delay / 1000}s (from Retry-After header).`
             );
           } else {
-            console.log(
-              `Rate limited. Retrying after ${delay / 1000} seconds (calculated backoff).`
+            console.warn(
+              `   Retrying after ${delay / 1000}s (exponential backoff - invalid Retry-After).`
             );
           }
         } else {
-          console.log(
-            `Rate limited. Retrying after ${delay / 1000} seconds (calculated backoff).`
+          console.warn(
+            `   Retrying after ${delay / 1000}s (exponential backoff - no Retry-After).`
           );
         }
-      } else if (status && status >= 400 && status < 500 && status !== 429) {
-        console.error(
-          'Non-retryable client error occurred. Stopping retries for this cycle.'
-        );
+        shouldRetry = true;
+      } else if (status && status >= 400 && status < 500) {
+        // Non-retryable client errors (e.g., 400, 401, 403)
+        console.error('   Non-retryable client error received.');
         shouldRetry = false;
+      } else {
+        // Server errors (5xx) or other connection issues - rely on default exponential backoff
+        console.warn(
+          `   Retrying after ${delay / 1000}s (exponential backoff - server/network error).`
+        );
+        shouldRetry = true;
       }
     } else {
-      console.error(
-        'An unexpected non-Axios error occurred during price fetch:',
-        error
+      console.error(` > Non-Axios Error: ${error.message || error}`);
+      // Decide if non-axios errors are retryable - assuming yes for now with backoff
+      console.warn(
+        `   Retrying after ${delay / 1000}s (exponential backoff - non-axios error).`
       );
+      shouldRetry = true;
     }
 
+    // Schedule retry or use fallback
     if (shouldRetry && retryCount < MAX_RETRIES) {
       retryCount++;
       console.log(

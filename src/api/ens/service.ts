@@ -26,7 +26,6 @@ function getProvider(): ethers.JsonRpcProvider {
 }
 
 export const resolveEnsName = async (name: string): Promise<string | null> => {
-  console.log(`[ENS Service] Attempting to resolve ENS name: ${name}`);
   if (!name || !name.includes('.')) {
     console.warn(`[ENS Service] Invalid input provided as ENS name: ${name}`);
     return null;
@@ -38,28 +37,26 @@ export const resolveEnsName = async (name: string): Promise<string | null> => {
     const cachedAddress = await redisClient.get(cacheKey);
     if (cachedAddress) {
       console.log(
-        `[ENS Service Cache HIT] Resolved ${name} to address: ${cachedAddress} from cache.`
+        `[ENS Service Cache HIT] Resolve: ${name} -> ${cachedAddress}`
       );
       return cachedAddress === 'null' ? null : cachedAddress;
     }
-    console.log(`[ENS Service Cache MISS] for name: ${name}`);
+    console.log(`[ENS Service Cache MISS] Resolve: ${name}`);
 
     const provider = getProvider();
     const address = await provider.resolveName(name);
 
     if (address) {
-      console.log(`[ENS Service] Resolved ${name} to address: ${address}`);
+      console.log(`[ENS Service] Resolved: ${name} -> ${address}`);
       await redisClient.set(cacheKey, address, 'EX', CACHE_TTL_SECONDS);
-      console.log(
-        `[ENS Service Cache SET] Stored ${name} -> ${address} for ${CACHE_TTL_SECONDS}s`
-      );
+      console.log(`[ENS Service Cache SET] Resolve: ${name}`);
     } else {
-      console.log(`[ENS Service] Could not resolve ENS name: ${name}`);
+      console.log(`[ENS Service] Failed Resolve: ${name}`);
     }
     return address;
   } catch (error: any) {
     console.error(
-      `[ENS Service] Error resolving ENS name ${name}:`,
+      `[ENS Service] Error resolving ${name}:`,
       error.message || error
     );
     return null;
@@ -69,11 +66,8 @@ export const resolveEnsName = async (name: string): Promise<string | null> => {
 export const lookupEnsAddress = async (
   address: string
 ): Promise<string | null> => {
-  console.log(`[ENS Service] Attempting to lookup address: ${address}`);
   if (!ethers.isAddress(address)) {
-    console.warn(
-      `[ENS Service] Invalid input provided as Ethereum address: ${address}`
-    );
+    console.warn(`[ENS Service] Invalid address: ${address}`);
     return null;
   }
 
@@ -84,30 +78,26 @@ export const lookupEnsAddress = async (
     const cachedName = await redisClient.get(cacheKey);
     if (cachedName) {
       console.log(
-        `[ENS Service Cache HIT] Looked up ${address} to name: ${cachedName} from cache.`
+        `[ENS Service Cache HIT] Lookup: ${address} -> ${cachedName}`
       );
       return cachedName === 'null' ? null : cachedName;
     }
-    console.log(`[ENS Service Cache MISS] for address: ${address}`);
+    console.log(`[ENS Service Cache MISS] Lookup: ${address}`);
 
     const provider = getProvider();
     const name = await provider.lookupAddress(normalizedAddress);
 
     if (name) {
-      console.log(`[ENS Service] Looked up ${address} to name: ${name}`);
+      console.log(`[ENS Service] Looked up: ${address} -> ${name}`);
       await redisClient.set(cacheKey, name, 'EX', CACHE_TTL_SECONDS);
-      console.log(
-        `[ENS Service Cache SET] Stored ${address} -> ${name} for ${CACHE_TTL_SECONDS}s`
-      );
+      console.log(`[ENS Service Cache SET] Lookup: ${address}`);
     } else {
-      console.log(
-        `[ENS Service] Could not lookup ENS name for address: ${address}`
-      );
+      console.log(`[ENS Service] Failed Lookup: ${address}`);
     }
     return name;
   } catch (error: any) {
     console.error(
-      `[ENS Service] Error looking up address ${address}:`,
+      `[ENS Service] Error looking up ${address}:`,
       error.message || error
     );
     return null;

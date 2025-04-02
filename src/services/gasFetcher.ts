@@ -118,8 +118,7 @@ async function fetchGasPrice(isRetry: boolean = false) {
           isDefault: false,
         };
         console.log(
-          'Successfully fetched and updated gas price data:',
-          JSON.stringify(currentGasPriceData)
+          `[Gas Service] Updated gas price: ${currentGwei.toFixed(3)} Gwei, LastUpdated: ${currentGasPriceData.timestamp}`
         );
         retryCount = 0;
       } else {
@@ -133,52 +132,66 @@ async function fetchGasPrice(isRetry: boolean = false) {
       );
       throw new Error('Unexpected data format from Infura');
     }
-  } catch (error) {
+  } catch (error: any) {
+    // Declare retry variables outside the conditional blocks
     let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount);
     delay = Math.min(delay, MAX_RETRY_DELAY_MS);
-    let shouldRetry = true;
+    let shouldRetry = true; // Assume retry unless explicitly set to false
 
+    console.error(
+      `[Gas Service] Error fetching gas price (Attempt ${retryCount + 1}):`
+    );
     if (axios.isAxiosError(error)) {
       const status = error.response?.status;
       console.error(
-        'Axios error fetching gas price from Infura:',
-        status,
-        error.response?.statusText,
-        error.response?.data || error.message
+        ` > Axios Error: Status ${status || 'N/A'}, Message: ${error.message}`,
+        error.response?.data
+          ? `| Data: ${JSON.stringify(error.response.data)}`
+          : ''
       );
 
       if (status === 429) {
+        // Handle Rate Limit
         const retryAfterHeader = error.response?.headers?.['retry-after'];
         if (retryAfterHeader) {
           const retryAfterSeconds = parseInt(retryAfterHeader, 10);
           if (!isNaN(retryAfterSeconds)) {
             delay = Math.max(delay, retryAfterSeconds * 1000);
-            console.log(
-              `Rate limited (Infura). Retrying after ${delay / 1000} seconds (from header).`
+            console.warn(
+              `   Retrying after ${delay / 1000}s (from Retry-After header).`
             );
           } else {
-            console.log(
-              `Rate limited (Infura). Retrying after ${delay / 1000} seconds (calculated backoff).`
+            console.warn(
+              `   Retrying after ${delay / 1000}s (exponential backoff - invalid Retry-After).`
             );
           }
         } else {
-          console.log(
-            `Rate limited (Infura). Retrying after ${delay / 1000} seconds (calculated backoff).`
+          console.warn(
+            `   Retrying after ${delay / 1000}s (exponential backoff - no Retry-After).`
           );
         }
-      } else if (status && status >= 400 && status < 500 && status !== 429) {
-        console.error(
-          'Non-retryable client error occurred with Infura. Stopping retries.'
-        );
+        shouldRetry = true;
+      } else if (status && status >= 400 && status < 500) {
+        // Non-retryable client error
+        console.error('   Non-retryable client error received.');
         shouldRetry = false;
+      } else {
+        // Server errors (5xx) or other connection issues - rely on default exponential backoff
+        console.warn(
+          `   Retrying after ${delay / 1000}s (exponential backoff - server/network error).`
+        );
+        shouldRetry = true;
       }
     } else {
-      console.error(
-        'An unexpected non-Axios error occurred during gas price fetch:',
-        error
+      console.error(` > Non-Axios Error: ${error.message || error}`);
+      // Decide if non-axios errors are retryable - assuming yes for now with backoff
+      console.warn(
+        `   Retrying after ${delay / 1000}s (exponential backoff - non-axios error).`
       );
+      shouldRetry = true;
     }
 
+    // Schedule retry or use fallback
     if (shouldRetry && retryCount < MAX_RETRIES) {
       retryCount++;
       console.log(

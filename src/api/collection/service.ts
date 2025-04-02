@@ -1,5 +1,11 @@
+import { env } from 'process';
+import axios from 'axios'; // Keep if used by any remaining logic
 import pLimit from 'p-limit';
-import { CollectionResult, BatchCollectionsResponse } from './types';
+import redisClient from '../../lib/redis'; // Import Redis client
+import {
+  CollectionResult, // This type might become obsolete here
+  BatchCollectionsResponse,
+} from './types';
 
 // Import the new utility function and its return type
 import {
@@ -8,7 +14,10 @@ import {
   BasicCollectionInfo,
 } from '../../utils/collectionApi';
 
+// Constants
 const MAX_CONCURRENT_REQUESTS = 5;
+const CACHE_PREFIX = 'collection:'; // Define cache prefix
+const CACHE_TTL_SECONDS = 60 * 60 * 4; // Use same TTL as worker for consistency
 
 // Define the structure for the API response item
 interface CollectionResponseItem {
@@ -18,22 +27,75 @@ interface CollectionResponseItem {
 
 // --- Main API Service Logic ---
 
-// Updated processCollection to return the new structure
+// Helper to adapt cached data (CombinedCollectionData + metadata) to API response item
+function adaptCachedDataToResponseItem(
+  cachedData: any
+): CollectionResponseItem | null {
+  // Basic validation of cached structure
+  if (
+    !cachedData ||
+    typeof cachedData.slug !== 'string' ||
+    typeof cachedData.floor_price !== 'number'
+  ) {
+    console.warn('[Cache Adapt] Invalid cached data structure:', cachedData);
+    return null;
+  }
+
+  // Reconstruct the info and price parts expected by the API response
+  const infoData: BasicCollectionInfo = {
+    slug: cachedData.slug,
+    name: cachedData.name ?? null,
+    description: cachedData.description ?? null,
+    image_url: cachedData.image_url ?? null,
+    safelist_status: cachedData.safelist_status ?? null,
+    total_supply: cachedData.total_supply ?? 0,
+    num_owners: cachedData.num_owners ?? 0,
+    total_volume: cachedData.total_volume ?? 0,
+    market_cap: cachedData.market_cap ?? 0,
+  };
+  const priceData =
+    cachedData.floor_price > 0 ? { floor_price: cachedData.floor_price } : null;
+
+  return { info: infoData, price: priceData };
+}
+
+// processCollection now also handles writing to cache after fetch
 async function processCollection(
   slug: string,
   contractAddress: string
 ): Promise<CollectionResponseItem | null> {
   console.log(
-    `[API Service] Processing collection via util: ${slug} (${contractAddress})`
+    `[API Service Process] Fetching fresh data via util: ${slug} (${contractAddress})`
   );
   try {
-    // Call the centralized utility function
-    const combinedData: CombinedCollectionData = await fetchCollectionDataUtil(
-      slug,
-      contractAddress
-    );
+    // 1. Fetch fresh data
+    const combinedData = await fetchCollectionDataUtil(slug, contractAddress);
 
-    // Separate info and price parts
+    // 2. Write to cache (write-through)
+    const cacheKey = `${CACHE_PREFIX}${slug}`;
+    const fetchedAt = new Date();
+    const dataToStore = {
+      ...combinedData,
+      lastUpdated: fetchedAt.toISOString(),
+      source: 'api-fetch-cache', // Indicate source
+    };
+    try {
+      await redisClient.set(
+        cacheKey,
+        JSON.stringify(dataToStore),
+        'EX',
+        CACHE_TTL_SECONDS
+      );
+      console.log(`[API Service Cache SET] Stored fresh data for ${slug}`);
+    } catch (cacheError) {
+      console.error(
+        `[API Service Cache SET Error] Failed for ${slug}:`,
+        cacheError
+      );
+      // Continue even if cache set fails
+    }
+
+    // 3. Adapt to API response format
     const infoData: BasicCollectionInfo = {
       slug: combinedData.slug,
       name: combinedData.name,
@@ -45,24 +107,21 @@ async function processCollection(
       total_volume: combinedData.total_volume,
       market_cap: combinedData.market_cap,
     };
-    // Create price object only if floor_price is valid (e.g., > 0, adjust as needed)
     const priceData =
       combinedData.floor_price > 0
         ? { floor_price: combinedData.floor_price }
         : null;
-
     return { info: infoData, price: priceData };
   } catch (error) {
     console.error(
-      `[API Service] Error fetching collection data for ${slug} using util:`,
+      `[API Service Process] Error fetching collection data for ${slug} using util:`,
       error
     );
-    // Indicate failure by returning null or a specific error structure if preferred
     return null;
   }
 }
 
-// Main exported function called by the controller
+// Main exported function updated with cache read logic
 export async function fetchBatchCollectionData(
   slugs: string[],
   contractAddresses: string[]
@@ -71,39 +130,73 @@ export async function fetchBatchCollectionData(
     return { data: {} };
   }
 
-  const limit = pLimit(MAX_CONCURRENT_REQUESTS);
-  // Adjust the type of the results accumulator
-  const results: Record<string, CollectionResponseItem | {}> = {}; // Use {} for failed/empty cases
+  const results: Record<string, CollectionResponseItem | {}> = {};
+  const misses: Array<{ slug: string; contractAddress: string }> = [];
 
-  const tasks = slugs.map((slug, index) => {
-    const contractAddress = contractAddresses[index];
-    return limit(() => processCollection(slug, contractAddress));
-  });
+  // 1. Check cache for all slugs first
+  for (let i = 0; i < slugs.length; i++) {
+    const slug = slugs[i];
+    const contractAddress = contractAddresses[i];
+    const cacheKey = `${CACHE_PREFIX}${slug}`;
 
-  const taskResults = await Promise.allSettled(tasks);
-
-  taskResults.forEach((result, index) => {
-    const slug = slugs[index];
-    if (result.status === 'fulfilled' && result.value) {
-      // Successfully processed, store the { info, price } object
-      results[slug] = result.value;
-    } else {
-      // Failed to process or processCollection returned null
-      console.warn(
-        `[API Service] Failed to get data for slug: ${slug}. Reason:`,
-        result.status === 'rejected'
-          ? result.reason
-          : 'Processing returned null'
-      );
-      // Store an empty object to indicate failure for this slug
-      results[slug] = {};
+    try {
+      const cachedValue = await redisClient.get(cacheKey);
+      if (cachedValue) {
+        console.log(`[API Service Cache HIT] for slug: ${slug}`);
+        const parsedData = JSON.parse(cachedValue);
+        const adaptedData = adaptCachedDataToResponseItem(parsedData);
+        if (adaptedData) {
+          results[slug] = adaptedData;
+        } else {
+          console.warn(
+            `[API Service Cache WARN] Invalid data in cache for ${slug}. Refetching.`
+          );
+          misses.push({ slug, contractAddress });
+        }
+      } else {
+        console.log(`[API Service Cache MISS] for slug: ${slug}`);
+        misses.push({ slug, contractAddress });
+      }
+    } catch (error) {
+      console.error(`[API Service Cache GET Error] for slug ${slug}:`, error);
+      // Treat cache error as a miss
+      misses.push({ slug, contractAddress });
     }
-  });
+  }
 
-  console.log('[API Service] Finished processing all collections.');
-  console.log('[API Service] Final Results:', results);
+  // 2. Fetch data for cache misses
+  if (misses.length > 0) {
+    console.log(`[API Service] Fetching ${misses.length} cache misses.`);
+    const limit = pLimit(MAX_CONCURRENT_REQUESTS);
+    const tasks = misses.map((miss) =>
+      limit(() => processCollection(miss.slug, miss.contractAddress))
+    );
 
-  // The structure here now matches Record<string, { info?, price? } | {}>
-  // This might require updating BatchCollectionsResponse type definition later
+    const missResults = await Promise.allSettled(tasks);
+
+    missResults.forEach((result, index) => {
+      const slug = misses[index].slug;
+      if (result.status === 'fulfilled' && result.value) {
+        results[slug] = result.value; // Store the fetched & adapted data
+      } else {
+        console.warn(
+          `[API Service] Failed to fetch cache miss for slug: ${slug}. Reason:`,
+          result.status === 'rejected'
+            ? result.reason
+            : 'Processing returned null'
+        );
+        // Ensure failed fetches are represented by empty object in final response
+        results[slug] = {};
+      }
+    });
+  }
+
+  console.log(
+    '[API Service] Finished processing all collections (cache + fetch).'
+  );
+  console.log(
+    `[API Service] Returning results for slugs: ${Object.keys(results).join(', ')}`
+  );
+
   return { data: results };
 }

@@ -7,17 +7,39 @@ export async function getMarketEthPrices(
   reply: FastifyReply
 ) {
   try {
-    const { lastUpdated, isDefault, ...prices } = getEthPrices();
+    const priceData = getEthPrices();
+
+    // Check if essential data is present
+    if (
+      !priceData ||
+      typeof priceData.usd === 'undefined' ||
+      !priceData.lastUpdated
+    ) {
+      // Data not ready yet or fetch failed initially
+      request.log.warn('ETH price data not available yet.');
+      // Return a specific status or default values
+      return reply.code(503).send({
+        error: 'Price data not available yet',
+        ethPrice: null,
+        lastUpdated: new Date(0).toISOString(),
+        isDefault: true,
+      });
+    }
+
+    // Destructure now that we know data exists
+    const { lastUpdated, isDefault, ...prices } = priceData;
 
     const responseData = {
-      ethPrice: prices,
-      lastUpdated: lastUpdated?.toISOString() || new Date(0).toISOString(),
-      isDefault: isDefault ?? true,
+      ethPrice: prices, // Contains usd, eur, gbp etc.
+      // lastUpdated is already an ISO string from the service
+      lastUpdated: lastUpdated,
+      isDefault: isDefault ?? false, // Default to false if somehow undefined after check
     };
 
     reply.send(responseData);
   } catch (error) {
-    request.log.error('Error retrieving ETH prices:', error);
+    // Log the actual error caught
+    request.log.error({ msg: 'Error retrieving ETH prices:', err: error });
     reply.code(500).send({ error: 'Internal Server Error' });
   }
 }

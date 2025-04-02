@@ -73,13 +73,6 @@ export async function fetchSingleCollectionInfo(
       timeout: FETCH_TIMEOUT_MS,
     });
 
-    // --- Log the actual response structure ---
-    console.log(
-      `[Util Fetch Info] Raw OpenSea response data for ${slug}:`,
-      JSON.stringify(response.data, null, 2)
-    );
-    // -----------------------------------------
-
     // Access data based on observed structure (adjust paths as needed after logging)
     // Assuming the relevant data might be directly on response.data based on V2 docs examples
     const collectionData = response.data; // Adjust if nested under 'collection'
@@ -120,22 +113,18 @@ export async function fetchSingleCollectionInfo(
     };
   } catch (error) {
     if (axios.isAxiosError(error)) {
+      // Concise Axios error logging
       console.error(
-        `[Util Fetch Info Error] Axios error for ${slug}: Status ${error.response?.status}, Message: ${error.message}`,
-        // Log response data if available, might contain error details from API
+        `[Util Fetch Info Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Status ${error.response?.status || 'N/A'}: ${error.message}`,
         error.response?.data
-          ? `Data: ${JSON.stringify(error.response.data)}`
-          : 'No response data'
+          ? `| Data: ${JSON.stringify(error.response.data)}`
+          : ''
       );
 
       if (error.response?.status === 404) {
         console.warn(`[Util Fetch Info] Collection ${slug} not found (404).`);
-      } else {
-        // Log details for other HTTP errors
-        console.error(`[Util Fetch Info] Non-404 HTTP error for ${slug}.`);
       }
-      // Return default object for ANY axios error for now to prevent breaking Promise.allSettled
-      // Consider re-throwing for specific critical errors later if needed
+      // Return default for all Axios errors in this function
       return {
         slug: slug,
         name: null,
@@ -148,13 +137,10 @@ export async function fetchSingleCollectionInfo(
         market_cap: 0,
       };
     } else {
-      // Log non-axios errors (network issues, setup problems)
       console.error(
         `[Util Fetch Info Error] Non-Axios error for ${slug}:`,
         error
       );
-      // Re-throwing might be appropriate here as it indicates a fundamental issue
-      // For now, return default to maintain consistency, but review this.
       return {
         slug: slug,
         name: null,
@@ -167,8 +153,6 @@ export async function fetchSingleCollectionInfo(
         market_cap: 0,
       };
     }
-    // This part might become unreachable if all paths return default, keep for safety
-    // throw error;
   }
 }
 
@@ -220,9 +204,9 @@ async function fetchNFTGOFloorPriceInternal(
       // Filter out entries where floor price couldn't be determined
       .filter((item: NftgoFloorPrice) => item.floor_price > 0);
 
+    // Summarize the log instead of printing the full array
     console.log(
-      `[Util NFTGO Fetch] Processed floor prices for ${contractAddress}:`,
-      floorPrices
+      `[Util NFTGO Fetch] Processed ${floorPrices.length} floor prices for ${contractAddress}`
     );
     return floorPrices;
   } catch (error) {
@@ -231,25 +215,21 @@ async function fetchNFTGOFloorPriceInternal(
         console.warn(
           `[Util NFTGO Fetch] No floor price found (404) for ${contractAddress}`
         );
-        return []; // Return empty array for 404, not an error
+        return [];
       }
-      // Log other Axios errors
+      // Concise Axios error logging
       console.error(
-        `[Util NFTGO Fetch Error] Axios error for ${contractAddress}:`,
-        {
-          status: error.response?.status,
-          message: error.message,
-          data: error.response?.data,
-        }
+        `[Util NFTGO Fetch Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Status ${error.response?.status || 'N/A'}: ${error.message}`,
+        error.response?.data
+          ? `| Data: ${JSON.stringify(error.response.data)}`
+          : ''
       );
     } else {
-      // Log non-Axios errors
       console.error(
         `[Util NFTGO Fetch Error] Non-Axios error for ${contractAddress}:`,
         error
       );
     }
-    // Re-throw the error to be caught by the caller
     throw error;
   }
 }
@@ -304,12 +284,16 @@ async function fetchOpenSeaFloorPriceInternal(slug: string): Promise<number> {
     if (axios.isAxiosError(error)) {
       if (error.response?.status === 404) {
         console.warn(
-          `[Util OS Floor Fetch] No listings found (404) for collection ${slug}, setting floor to 0.`
+          `[Util OS Floor Fetch] No listings found (404) for collection ${slug}.`
         );
-        return 0; // Return 0 for 404
+        return 0;
       }
+      // Concise Axios error logging
       console.error(
-        `[Util OS Floor Fetch Error] Axios error for ${slug}: ${error.response?.status} ${error.message}`
+        `[Util OS Floor Fetch Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Status ${error.response?.status || 'N/A'}: ${error.message}`,
+        error.response?.data
+          ? `| Data: ${JSON.stringify(error.response.data)}`
+          : ''
       );
     } else {
       console.error(
@@ -317,7 +301,6 @@ async function fetchOpenSeaFloorPriceInternal(slug: string): Promise<number> {
         error
       );
     }
-    // Don't throw here, just return 0 as it's a fallback
     return 0;
   }
 }
@@ -366,10 +349,21 @@ export async function fetchFloorPriceData(
     return { floor_price: openseaPrice };
   } catch (error) {
     // Catch errors from fetchNFTGOFloorPriceInternal if it threw something other than 404
-    console.error(
-      `[Util Fetch Floor] Error during NFTGO fetch for ${contractAddress}, trying OpenSea fallback:`,
-      error
-    );
+    // Make this log concise as well
+    if (axios.isAxiosError(error)) {
+      console.error(
+        `[Util Fetch Floor] Error during NFTGO fetch for ${contractAddress} (Status: ${error.response?.status || 'N/A'}, Msg: ${error.message}). Trying OpenSea fallback.`,
+        error.response?.data
+          ? `| Data: ${JSON.stringify(error.response.data)}`
+          : ''
+      );
+    } else {
+      console.error(
+        `[Util Fetch Floor] Non-Axios error during NFTGO fetch for ${contractAddress}, trying OpenSea fallback:`,
+        error
+      );
+    }
+
     // Fallback to OpenSea if NFTGO fetch failed unexpectedly
     try {
       const openseaPrice = await fetchOpenSeaFloorPriceInternal(slug);
