@@ -18,6 +18,7 @@ import { env } from 'process';
 import { startPriceFetcher } from './services/priceFetcher';
 import { startGasFetcher } from './services/gasFetcher';
 import './services/collectionFetcher';
+import './services/portfolioCalculatorService';
 
 // --- Mongoose Connection Event Listeners ---
 mongoose.connection.on('connected', () => {
@@ -83,7 +84,8 @@ async function startServer() {
     // Start background services that might rely on DB connection AFTER connecting
     startPriceFetcher();
     startGasFetcher();
-    // If collectionFetcher needs DB, ensure it starts/connects after Mongoose is ready
+    // collectionFetcher worker starts on import
+    // portfolioCalculatorService worker starts on import
 
     // Start listening for requests
     await server.listen({ port: Number(env.PORT) || 8080, host: '0.0.0.0' });

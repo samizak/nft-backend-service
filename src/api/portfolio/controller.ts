@@ -2,8 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { ethers } from 'ethers';
 import redisClient from '../../lib/redis';
 import { CachedPortfolioResponse, PortfolioSummaryData } from './types';
-// Import the function to add job to queue (will create this later)
-// import { addPortfolioJob } from '../../services/portfolioCalculatorService';
+import { addPortfolioJob } from '../../services/portfolioCalculatorService';
 
 // Define cache constants
 const CACHE_PREFIX_PORTFOLIO = 'portfolio:summary:';
@@ -58,10 +57,9 @@ export async function getPortfolioSummaryController(
 
     // Trigger the background job (fire and forget, don't wait for it)
     try {
-      // Pass the address the job needs to calculate for
-      // await addPortfolioJob({ address: normalizedAddress }); // Commented out for now
+      await addPortfolioJob({ address: normalizedAddress });
       request.log.info(
-        `[Portfolio API] Background job trigger SKIPPED (service not implemented yet) for: ${address}`
+        `[Portfolio API] Triggered background calculation job for: ${address}`
       );
     } catch (queueError) {
       request.log.error(
