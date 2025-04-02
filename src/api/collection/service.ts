@@ -1,6 +1,6 @@
 import pLimit from 'p-limit';
 import redisClient from '../../lib/redis'; // Import Redis client
-import { BatchCollectionsResponse } from './types';
+import { BatchCollectionsResponse, CollectionResponseItem } from './types';
 
 // Import the new utility function and its return type
 import {
@@ -12,12 +12,6 @@ import {
 const MAX_CONCURRENT_REQUESTS = 5;
 const CACHE_PREFIX = 'collection:'; // Define cache prefix
 const CACHE_TTL_SECONDS = 60 * 60 * 4; // Use same TTL as worker for consistency
-
-// Define the structure for the API response item
-interface CollectionResponseItem {
-  info: BasicCollectionInfo | null;
-  price: { floor_price: number } | null;
-}
 
 // --- Main API Service Logic ---
 
@@ -124,7 +118,11 @@ export async function fetchBatchCollectionData(
     return { data: {} };
   }
 
-  const results: Record<string, CollectionResponseItem | {}> = {};
+  // Use Record<string, never> instead of {} for the empty object case
+  const results: Record<
+    string,
+    CollectionResponseItem | Record<string, never>
+  > = {};
   const misses: Array<{ slug: string; contractAddress: string }> = [];
 
   // 1. Check cache for all slugs first
@@ -180,7 +178,7 @@ export async function fetchBatchCollectionData(
             : 'Processing returned null'
         );
         // Ensure failed fetches are represented by empty object in final response
-        results[slug] = {};
+        results[slug] = {} as Record<string, never>;
       }
     });
   }
