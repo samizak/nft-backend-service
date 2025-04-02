@@ -16,9 +16,7 @@ interface PortfolioParams {
 export async function getPortfolioSummaryController(
   request: FastifyRequest<{ Params: PortfolioParams }>,
   reply: FastifyReply
-): Promise<CachedPortfolioResponse> {
-  // Return type hint
-
+) {
   const { address } = request.params;
 
   if (!ethers.isAddress(address)) {
@@ -30,32 +28,51 @@ export async function getPortfolioSummaryController(
   }
   const normalizedAddress = address.toLowerCase();
   const cacheKey = `${CACHE_PREFIX_PORTFOLIO}${normalizedAddress}`;
+  request.log.info(`[Portfolio API] Checking cache for key: ${cacheKey}`);
 
   try {
     const cachedData = await redisClient.get(cacheKey);
 
     if (cachedData) {
-      request.log.info(`[Portfolio API Cache HIT] for address: ${address}`);
+      request.log.info(
+        `[Portfolio API Cache HIT] Found raw data for address: ${address}`
+      );
       try {
         const parsedData: PortfolioSummaryData = JSON.parse(cachedData);
-        // Optional: Add validation for parsedData structure here if needed
+        // Log the parsed data before sending
+        request.log.info({
+          msg: `[Portfolio API Cache HIT] Parsed data successfully for ${address}. Returning status: ready.`,
+          address: address,
+          // Only log key summary fields, not the full breakdown array
+          summary: {
+            totalValueEth: parsedData.totalValueEth,
+            nftCount: parsedData.nftCount,
+            calculatedAt: parsedData.calculatedAt,
+          },
+        });
         return reply.send({ status: 'ready', data: parsedData });
       } catch (parseError) {
         request.log.error(
-          `[Portfolio API Cache WARN] Failed to parse cached data for ${address}:`,
+          `[Portfolio API Cache WARN] Failed to parse cached data for ${address}. Data was: ${cachedData}`,
           parseError
         );
-        // Proceed as if cache miss, potentially trigger calculation
+        // Proceed as if cache miss if parsing fails
       }
+    } else {
+      // Logged miss correctly now
+      request.log.info(
+        `[Portfolio API Cache MISS] No data found in Redis for key: ${cacheKey}`
+      );
     }
 
-    // --- Cache Miss ---
-    request.log.info(`[Portfolio API Cache MISS] for address: ${address}`);
+    // --- Cache Miss or Parse Failure Logic ---
+    request.log.info(
+      `[Portfolio API] Cache miss or parse failure for ${address}. Triggering calculation.`
+    );
 
     // TODO: Check if a calculation job for this address is already pending/active in BullMQ
-    // to avoid queueing duplicates frequently.
 
-    // Trigger the background job (fire and forget, don't wait for it)
+    // Trigger the background job
     try {
       await addPortfolioJob({ address: normalizedAddress });
       request.log.info(
@@ -66,13 +83,11 @@ export async function getPortfolioSummaryController(
         `[Portfolio API Queue Error] Failed to add job for ${address}:`,
         queueError
       );
-      // Even if queuing fails, we still return 'calculating' status,
-      // maybe the job will be triggered by another mechanism later.
     }
 
-    // Return "calculating" status to the frontend
+    // Return "calculating" status
     return reply.code(202).send({
-      // 202 Accepted status code is suitable
+      // 202 Accepted
       status: 'calculating',
       data: null,
       message: 'Portfolio summary calculation has been initiated.',
@@ -82,6 +97,7 @@ export async function getPortfolioSummaryController(
       `[Portfolio API Error] Error retrieving cached summary for ${address}:`,
       error
     );
+    // Ensure error response is sent
     return reply.code(500).send({
       status: 'error',
       data: null,

@@ -9,6 +9,11 @@ const NFTGO_API_BASE = 'https://data-api.nftgo.io/eth/v1';
 const NFTGO_API_KEY = process.env.NFTGO_API_KEY || '';
 const FETCH_TIMEOUT_MS = 15000; // 15 seconds
 
+// --- Retry/Backoff Constants ---
+const MAX_RETRIES = 3; // Max retries for individual API calls
+const INITIAL_RETRY_DELAY_MS = 500; // Start with shorter delay for internal retries
+const MAX_RETRY_DELAY_MS = 5 * 1000; // Max delay for internal retries (5 seconds)
+
 // Define a simpler type for the basic data returned by fetchSingleCollectionInfo
 export interface BasicCollectionInfo {
   slug: string;
@@ -47,113 +52,122 @@ export async function fetchSingleCollectionInfo(
   const url = `${OPENSEA_API_BASE}/collections/${slug}`;
   console.log(`[Util Fetch Info] Attempting for: ${slug} at ${url}`);
 
+  // Default return structure used on failure
+  const defaultReturn: BasicCollectionInfo = {
+    slug: slug,
+    name: null,
+    description: null,
+    image_url: null,
+    safelist_status: null,
+    total_supply: 0,
+    num_owners: 0,
+    total_volume: 0,
+    market_cap: 0,
+  };
+
   if (!OPENSEA_API_KEY) {
     console.error('[Util Fetch Info] OpenSea API Key is missing.');
-    // Return default structure on configuration error
-    return {
-      slug: slug,
-      name: null,
-      description: null,
-      image_url: null,
-      safelist_status: null,
-      total_supply: 0,
-      num_owners: 0,
-      total_volume: 0,
-      market_cap: 0,
-    };
+    return defaultReturn;
   }
 
-  try {
-    const response = await axios.get<any>(url, {
-      // Use <any> for now, log the structure
-      headers: {
-        Accept: 'application/json',
-        'X-API-KEY': OPENSEA_API_KEY,
-      },
-      timeout: FETCH_TIMEOUT_MS,
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await axios.get<any>(url, {
+        headers: {
+          Accept: 'application/json',
+          'X-API-KEY': OPENSEA_API_KEY,
+        },
+        timeout: FETCH_TIMEOUT_MS,
+      });
 
-    // Access data based on observed structure (adjust paths as needed after logging)
-    // Assuming the relevant data might be directly on response.data based on V2 docs examples
-    const collectionData = response.data; // Adjust if nested under 'collection'
-
-    if (!collectionData) {
-      console.warn(
-        `[Util Fetch Info] No collection data object found in response for slug: ${slug}`
-      );
-      return {
-        slug: slug,
-        name: null,
-        description: null,
-        image_url: null,
-        safelist_status: null,
-        total_supply: 0,
-        num_owners: 0,
-        total_volume: 0,
-        market_cap: 0,
-      };
-    }
-
-    // Construct the BasicCollectionInfo object safely
-    return {
-      slug: slug,
-      name: collectionData.name ?? null,
-      description: collectionData.description ?? null,
-      image_url: collectionData.image_url ?? null,
-      safelist_status: collectionData.safelist_status ?? null, // Check this path
-      // Access stats safely, adjust paths based on logged response
-      total_supply:
-        collectionData.total_supply ?? collectionData.stats?.total_supply ?? 0,
-      num_owners:
-        collectionData.num_owners ?? collectionData.stats?.num_owners ?? 0,
-      total_volume:
-        collectionData.total_volume ?? collectionData.stats?.total_volume ?? 0,
-      market_cap:
-        collectionData.market_cap ?? collectionData.stats?.market_cap ?? 0,
-    };
-  } catch (error) {
-    if (axios.isAxiosError(error)) {
-      // Concise Axios error logging
-      console.error(
-        `[Util Fetch Info Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Status ${error.response?.status || 'N/A'}: ${error.message}`,
-        error.response?.data
-          ? `| Data: ${JSON.stringify(error.response.data)}`
-          : ''
-      );
-
-      if (error.response?.status === 404) {
-        console.warn(`[Util Fetch Info] Collection ${slug} not found (404).`);
+      const collectionData = response.data;
+      if (!collectionData) {
+        console.warn(
+          `[Util Fetch Info] No collection data object in response for slug: ${slug}`
+        );
+        return defaultReturn;
       }
-      // Return default for all Axios errors in this function
+
+      // Success - return the data
       return {
         slug: slug,
-        name: null,
-        description: null,
-        image_url: null,
-        safelist_status: null,
-        total_supply: 0,
-        num_owners: 0,
-        total_volume: 0,
-        market_cap: 0,
+        name: collectionData.name ?? null,
+        description: collectionData.description ?? null,
+        image_url: collectionData.image_url ?? null,
+        safelist_status: collectionData.safelist_request_status ?? null,
+        total_supply:
+          collectionData.total_supply ??
+          collectionData.stats?.total_supply ??
+          0,
+        num_owners:
+          collectionData.num_owners ?? collectionData.stats?.num_owners ?? 0,
+        total_volume:
+          collectionData.total_volume ??
+          collectionData.stats?.total_volume ??
+          0,
+        market_cap:
+          collectionData.market_cap ?? collectionData.stats?.market_cap ?? 0,
       };
-    } else {
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const retryAfterHeader = error.response?.headers?.['retry-after'];
+        let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+        delay = Math.min(delay, MAX_RETRY_DELAY_MS);
+
+        console.warn(
+          `[Util Fetch Info WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${slug}. Status: ${status || 'N/A'}. Message: ${error.message}`
+        );
+
+        if (status === 429) {
+          let waitTime = delay;
+          if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
+            waitTime = Math.max(delay, Number(retryAfterHeader) * 1000 + 200); // Use header + buffer
+          }
+          if (attempt < MAX_RETRIES) {
+            console.log(
+              `   Rate limit hit. Retrying after ${waitTime / 1000}s...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitTime));
+            continue; // Go to next attempt
+          }
+        } else if (status === 404) {
+          console.warn(
+            `   Collection ${slug} not found (404). Returning default.`
+          );
+          return defaultReturn;
+        } else if (status && status >= 500) {
+          // Retry on server errors
+          if (attempt < MAX_RETRIES) {
+            console.log(
+              `   Server error (${status}). Retrying after ${delay / 1000}s...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+        } else {
+          // Other client errors (400, 401, 403 etc.) or unknown errors - don't retry
+          console.error(
+            `   Non-retryable Axios error. Status: ${status || 'N/A'}. Returning default.`
+          );
+          return defaultReturn;
+        }
+      } else {
+        // Non-Axios error - don't retry
+        console.error(
+          `[Util Fetch Info Error] Non-Axios error for ${slug}:`,
+          error
+        );
+        return defaultReturn;
+      }
+      // If loop finishes after max retries on retryable errors
       console.error(
-        `[Util Fetch Info Error] Non-Axios error for ${slug}:`,
-        error
+        `[Util Fetch Info Error] Max retries (${MAX_RETRIES}) reached for ${slug}. Returning default.`
       );
-      return {
-        slug: slug,
-        name: null,
-        description: null,
-        image_url: null,
-        safelist_status: null,
-        total_supply: 0,
-        num_owners: 0,
-        total_volume: 0,
-        market_cap: 0,
-      };
     }
-  }
+  } // End for loop
+
+  return defaultReturn; // Should only be reached if max retries hit
 }
 
 const sleep = (ms: number): Promise<void> =>
@@ -171,67 +185,105 @@ async function fetchNFTGOFloorPriceInternal(
   }
 
   const url = `${NFTGO_API_BASE}/marketplace/${contractAddress.toLowerCase()}/floor-price`;
-  console.log(`[Util NFTGO Fetch] Making request to: ${url}`);
+  console.log(
+    `[Util NFTGO Fetch] Attempting for: ${contractAddress} at ${url}`
+  );
 
-  try {
-    const response = await axios.get(url, {
-      headers: {
-        Accept: 'application/json',
-        'X-API-KEY': NFTGO_API_KEY,
-      },
-      timeout: FETCH_TIMEOUT_MS,
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await axios.get(url, {
+        headers: {
+          Accept: 'application/json',
+          'X-API-KEY': NFTGO_API_KEY,
+        },
+        timeout: FETCH_TIMEOUT_MS,
+      });
 
-    if (
-      !response.data ||
-      !Array.isArray(response.data.collection_floor_price_list)
-    ) {
-      console.warn(
-        `[Util NFTGO Fetch] Invalid or empty floor price list in response for ${contractAddress}`
-      );
-      return [];
-    }
-
-    const floorPrices = response.data.collection_floor_price_list
-      .map((item: any) => ({
-        marketplace: item.marketplace_name,
-        // Ensure floor_price and value exist and are numbers
-        floor_price:
-          typeof item.floor_price?.value === 'number'
-            ? item.floor_price.value
-            : 0,
-      }))
-      // Filter out entries where floor price couldn't be determined
-      .filter((item: NftgoFloorPrice) => item.floor_price > 0);
-
-    // Summarize the log instead of printing the full array
-    console.log(
-      `[Util NFTGO Fetch] Processed ${floorPrices.length} floor prices for ${contractAddress}`
-    );
-    return floorPrices;
-  } catch (error) {
-    if (axios.isAxiosError(error)) {
-      if (error.response?.status === 404) {
+      if (
+        !response.data ||
+        !Array.isArray(response.data.collection_floor_price_list)
+      ) {
         console.warn(
-          `[Util NFTGO Fetch] No floor price found (404) for ${contractAddress}`
+          `[Util NFTGO Fetch WARN] Invalid or empty floor price list for ${contractAddress}`
         );
         return [];
       }
-      // Concise Axios error logging
-      console.error(
-        `[Util NFTGO Fetch Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Status ${error.response?.status || 'N/A'}: ${error.message}`,
-        error.response?.data
-          ? `| Data: ${JSON.stringify(error.response.data)}`
-          : ''
+
+      const floorPrices = response.data.collection_floor_price_list
+        .map((item: any) => ({
+          marketplace: item.marketplace_name,
+          floor_price:
+            typeof item.floor_price?.value === 'number'
+              ? item.floor_price.value
+              : 0,
+        }))
+        .filter((item: NftgoFloorPrice) => item.floor_price > 0);
+
+      console.log(
+        `[Util NFTGO Fetch] Success. Processed ${floorPrices.length} floor prices for ${contractAddress}`
       );
-    } else {
+      return floorPrices;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const retryAfterHeader = error.response?.headers?.['retry-after'];
+        let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+        delay = Math.min(delay, MAX_RETRY_DELAY_MS);
+
+        console.warn(
+          `[Util NFTGO Fetch WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${contractAddress}. Status: ${status || 'N/A'}. Message: ${error.message}`
+        );
+
+        if (status === 429) {
+          let waitTime = delay;
+          if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
+            waitTime = Math.max(delay, Number(retryAfterHeader) * 1000 + 200);
+          }
+          if (attempt < MAX_RETRIES) {
+            console.log(
+              `   Rate limit hit. Retrying after ${waitTime / 1000}s...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitTime));
+            continue;
+          }
+        } else if (status === 404) {
+          console.warn(
+            `   Collection ${contractAddress} not found on NFTGO (404). Returning [].`
+          );
+          return [];
+        } else if (status && status >= 500) {
+          // Retry on server errors
+          if (attempt < MAX_RETRIES) {
+            console.log(
+              `   Server error (${status}). Retrying after ${delay / 1000}s...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+        } else {
+          // Other client errors (400, 401, 403 etc.) or unknown - Throw to caller? Or return []?
+          // Let's throw for unexpected client errors here, handled by fetchFloorPriceData
+          console.error(
+            `   Non-retryable Axios error. Status: ${status || 'N/A'}. Throwing.`
+          );
+          throw error;
+        }
+      } else {
+        // Non-Axios error - Throw to caller
+        console.error(
+          `[Util NFTGO Fetch Error] Non-Axios error for ${contractAddress}:`,
+          error
+        );
+        throw error;
+      }
+      // If loop finishes after max retries on retryable errors
       console.error(
-        `[Util NFTGO Fetch Error] Non-Axios error for ${contractAddress}:`,
-        error
+        `[Util NFTGO Fetch Error] Max retries (${MAX_RETRIES}) reached for ${contractAddress}. Returning [].`
       );
-    }
-    throw error;
-  }
+    } // End catch
+  } // End for loop
+
+  return []; // Return empty if max retries hit
 }
 
 /**
@@ -239,70 +291,108 @@ async function fetchNFTGOFloorPriceInternal(
  */
 async function fetchOpenSeaFloorPriceInternal(slug: string): Promise<number> {
   const url = `${OPENSEA_API_BASE}/listings/collection/${slug}/best`;
-  console.log(`[Util OS Floor Fetch] Attempting fallback for: ${slug}`);
+  console.log(
+    `[Util OS Floor Fetch] Attempting fallback for: ${slug} at ${url}`
+  );
 
   if (!OPENSEA_API_KEY) {
     console.error('[Util OS Floor Fetch] OpenSea API Key is missing.');
-    throw new Error(
-      'OpenSea API Key is missing for fallback floor price fetch.'
-    );
+    // Don't throw, just return 0 as it's a fallback
+    return 0;
   }
 
-  try {
-    const response = await axios.get<{ listings: OpenseaListing[] }>(url, {
-      headers: {
-        Accept: 'application/json',
-        'X-API-KEY': OPENSEA_API_KEY,
-      },
-      timeout: FETCH_TIMEOUT_MS,
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await axios.get<{ listings: OpenseaListing[] }>(url, {
+        headers: {
+          Accept: 'application/json',
+          'X-API-KEY': OPENSEA_API_KEY,
+        },
+        timeout: FETCH_TIMEOUT_MS,
+      });
 
-    const floorData = response.data.listings?.[0]?.price?.current?.value;
-    if (floorData) {
-      try {
-        const floorPriceWei = BigInt(floorData);
-        // Convert Wei to ETH (assuming 18 decimals)
-        const floorPriceEth = Number(floorPriceWei) / 1e18;
-        if (!isNaN(floorPriceEth)) {
-          console.log(
-            `[Util OS Floor Fetch] Success for ${slug}: ${floorPriceEth} ETH`
+      const floorData = response.data.listings?.[0]?.price?.current?.value;
+      if (floorData) {
+        try {
+          const floorPriceWei = BigInt(floorData);
+          const floorPriceEth = Number(floorPriceWei) / 1e18;
+          if (!isNaN(floorPriceEth)) {
+            console.log(
+              `[Util OS Floor Fetch] Success for ${slug}: ${floorPriceEth} ETH`
+            );
+            return floorPriceEth;
+          }
+        } catch (e) {
+          console.error(
+            `[Util OS Floor Fetch] Error parsing price ${floorData} for ${slug}:`,
+            e
           );
-          return floorPriceEth;
         }
-      } catch (e) {
-        console.error(
-          `[Util OS Floor Fetch] Error parsing price ${floorData} for ${slug}:`,
-          e
-        );
       }
-    }
-    console.warn(
-      `[Util OS Floor Fetch] Could not determine OpenSea floor price for ${slug}.`
-    );
-    return 0; // Return 0 if no price found or parsing failed
-  } catch (error) {
-    if (axios.isAxiosError(error)) {
-      if (error.response?.status === 404) {
+      console.warn(
+        `[Util OS Floor Fetch WARN] Could not determine OpenSea floor price for ${slug}.`
+      );
+      return 0; // Return 0 if no price found or parsing failed, don't retry
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const retryAfterHeader = error.response?.headers?.['retry-after'];
+        let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+        delay = Math.min(delay, MAX_RETRY_DELAY_MS);
+
         console.warn(
-          `[Util OS Floor Fetch] No listings found (404) for collection ${slug}.`
+          `[Util OS Floor Fetch WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${slug}. Status: ${status || 'N/A'}. Message: ${error.message}`
+        );
+
+        if (status === 429) {
+          let waitTime = delay;
+          if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
+            waitTime = Math.max(delay, Number(retryAfterHeader) * 1000 + 200);
+          }
+          if (attempt < MAX_RETRIES) {
+            console.log(
+              `   Rate limit hit. Retrying after ${waitTime / 1000}s...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitTime));
+            continue;
+          }
+        } else if (status === 404) {
+          console.warn(
+            `   OS listings not found (404) for collection ${slug}. Returning 0.`
+          );
+          return 0; // Return 0 for 404, don't retry
+        } else if (status && status >= 500) {
+          // Retry on server errors
+          if (attempt < MAX_RETRIES) {
+            console.log(
+              `   Server error (${status}). Retrying after ${delay / 1000}s...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+        } else {
+          // Other client errors - don't retry fallback
+          console.error(
+            `   Non-retryable Axios error. Status: ${status || 'N/A'}. Returning 0.`
+          );
+          return 0;
+        }
+      } else {
+        // Non-Axios error - don't retry fallback
+        console.error(
+          `[Util OS Floor Fetch Error] Non-Axios error for ${slug}:`,
+          error
         );
         return 0;
       }
-      // Concise Axios error logging
+      // If loop finishes after max retries on retryable errors
       console.error(
-        `[Util OS Floor Fetch Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Status ${error.response?.status || 'N/A'}: ${error.message}`,
-        error.response?.data
-          ? `| Data: ${JSON.stringify(error.response.data)}`
-          : ''
+        `[Util OS Floor Fetch Error] Max retries (${MAX_RETRIES}) reached for ${slug}. Returning 0.`
       );
-    } else {
-      console.error(
-        `[Util OS Floor Fetch Error] Non-Axios error for ${slug}:`,
-        error
-      );
-    }
-    return 0;
-  }
+    } // End catch
+  } // End for loop
+
+  return 0; // Return 0 if max retries hit
 }
 
 /**
