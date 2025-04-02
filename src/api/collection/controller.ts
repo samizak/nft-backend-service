@@ -1,5 +1,5 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { fetchBatchCollectionData } from './service';
+import { getBatchCollectionDataFromCache } from './service';
 import { BatchCollectionsRequestBody } from './types';
 
 export async function getBatchCollections(
@@ -9,33 +9,33 @@ export async function getBatchCollections(
   reply: FastifyReply
 ) {
   try {
-    const { collections } = request.body;
+    const { collection_slugs } = request.body;
 
-    if (!collections || !Array.isArray(collections)) {
+    if (!collection_slugs || !Array.isArray(collection_slugs)) {
       return reply.code(400).send({
-        error: 'Invalid request format. Expected array of collection slugs',
+        error: 'Invalid request body. Expected { collection_slugs: string[] }.',
       });
     }
 
-    if (collections.length === 0) {
+    if (collection_slugs.length === 0) {
       return reply.code(400).send({
-        error: 'Collections array cannot be empty',
+        error: 'collection_slugs array cannot be empty',
       });
     }
 
-    const MAX_COLLECTIONS = 50;
-    if (collections.length > MAX_COLLECTIONS) {
+    const MAX_SLUGS_PER_REQUEST = 100;
+    if (collection_slugs.length > MAX_SLUGS_PER_REQUEST) {
       return reply.code(400).send({
-        error: `Too many collections requested. Maximum is ${MAX_COLLECTIONS}`,
+        error: `Too many slugs requested. Maximum allowed per request is ${MAX_SLUGS_PER_REQUEST}`,
       });
     }
 
-    const result = await fetchBatchCollectionData(collections);
+    const result = await getBatchCollectionDataFromCache(collection_slugs);
     return reply.send(result);
   } catch (error) {
-    request.log.error(error);
+    request.log.error('Error in getBatchCollections controller:', error);
     return reply.code(500).send({
-      error: 'Internal server error',
+      error: 'Internal Server Error fetching batch collection data',
     });
   }
 }

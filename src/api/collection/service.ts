@@ -1,6 +1,8 @@
 import { env } from 'process';
 import axios, { AxiosError } from 'axios';
 import pLimit from 'p-limit';
+import redisClient from '../../lib/redis'; // Import Redis client
+import { addCollectionsToQueue } from '../../services/collectionFetcher'; // Import queue function
 import {
   CollectionInfo,
   PriceData,
@@ -15,9 +17,101 @@ const MAX_CONCURRENT_REQUESTS = 5;
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const FETCH_TIMEOUT_MS = 15000;
+const CACHE_PREFIX = 'collection:'; // Cache key prefix (must match worker)
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function getBatchCollectionDataFromCache(
+  collectionSlugs: string[]
+): Promise<BatchCollectionsResponse> {
+  const results: { [collectionSlug: string]: CollectionResult } = {};
+  const cacheKeys = collectionSlugs.map((slug) => `${CACHE_PREFIX}${slug}`);
+  const missingSlugs: string[] = [];
+
+  try {
+    console.log(
+      `[Cache] Attempting to fetch ${cacheKeys.length} slugs from cache.`
+    );
+    // Use mget to fetch all keys at once. Returns an array of strings or nulls.
+    const cachedData = await redisClient.mget(cacheKeys);
+
+    cachedData.forEach((item, index) => {
+      const slug = collectionSlugs[index];
+      if (item) {
+        // Check if data exists for this key (not null)
+        try {
+          // Attempt to parse the cached JSON string
+          const parsedItem = JSON.parse(item);
+          // Basic validation of parsed structure (can be more robust)
+          if (
+            parsedItem &&
+            typeof parsedItem === 'object' &&
+            parsedItem.info !== undefined &&
+            parsedItem.price !== undefined
+          ) {
+            results[slug] = {
+              info: parsedItem.info, // Assign directly from cached object
+              price: parsedItem.price,
+              // Optionally include lastUpdated from cache?
+              // lastUpdated: parsedItem.lastUpdated
+            };
+          } else {
+            console.warn(
+              `[Cache] Invalid JSON structure in cache for ${slug}. Will queue for refresh.`
+            );
+            results[slug] = {}; // Default empty object
+            missingSlugs.push(slug);
+          }
+        } catch (parseError) {
+          console.error(
+            `[Cache] Failed to parse cached data for ${slug}:`,
+            parseError
+          );
+          results[slug] = {}; // Default empty object on parse error
+          missingSlugs.push(slug); // Treat parse error as a miss
+        }
+      } else {
+        // Cache miss
+        console.log(`[Cache] Miss for slug: ${slug}.`);
+        results[slug] = {}; // Default empty object for cache miss
+        missingSlugs.push(slug);
+      }
+    });
+
+    console.log(
+      `[Cache] Found ${collectionSlugs.length - missingSlugs.length} slugs in cache. Missing ${missingSlugs.length}.`
+    );
+
+    // If there were cache misses, trigger background fetches for them
+    if (missingSlugs.length > 0) {
+      console.log(
+        `[Cache] Queuing ${missingSlugs.length} missing slugs for background fetch.`
+      );
+      // Don't await this, let it run in the background
+      addCollectionsToQueue(missingSlugs).catch((queueError) => {
+        console.error(
+          '[Cache] Failed to add missing slugs to queue:',
+          queueError
+        );
+      });
+    }
+  } catch (error) {
+    console.error('[Cache] Error fetching from Redis:', error);
+    // Handle Redis error: Return default empty objects for all requested slugs
+    collectionSlugs.forEach((slug) => {
+      if (!results[slug]) {
+        // Avoid overwriting if parsed partially before error
+        results[slug] = {};
+      }
+    });
+    // Optionally, still try to queue all slugs if Redis failed?
+    // Consider adding all slugs to queue if redis itself fails
+    // addCollectionsToQueue(collectionSlugs).catch(...);
+  }
+
+  return { data: results };
+}
 
 async function fetchSingleCollectionInfo(
   slug: string

@@ -10,13 +10,14 @@ const collectionRoutes: FastifyPluginAsync = async (
       schema: {
         body: {
           type: 'object',
-          required: ['collections'],
+          required: ['collection_slugs'],
           properties: {
-            collections: {
+            collection_slugs: {
               type: 'array',
               items: {
                 type: 'string',
               },
+              minItems: 1,
             },
           },
         },

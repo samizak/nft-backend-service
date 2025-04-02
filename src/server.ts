@@ -16,6 +16,7 @@ import { env } from 'process';
 import { startPriceFetcher } from './services/priceFetcher';
 import { startGasFetcher } from './services/gasFetcher';
 import { connectToDatabase, disconnectFromDatabase } from './lib/db';
+import './services/collectionFetcher';
 
 const server = fastify({
   logger: true,

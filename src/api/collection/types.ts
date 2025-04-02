@@ -23,5 +23,5 @@ export interface BatchCollectionsResponse {
 }
 
 export interface BatchCollectionsRequestBody {
-  collections: string[];
+  collection_slugs: string[];
 }
