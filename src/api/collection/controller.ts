@@ -1,5 +1,4 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { getBatchCollectionDataFromCache } from './service';
 import { BatchCollectionsRequestBody } from './types';
 import {
   fetchNFTGOCollectionInfo,

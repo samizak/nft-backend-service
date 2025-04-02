@@ -6,10 +6,6 @@ import {
   getNFTGOFloorPriceHandler,
   getNFTGOFloorPriceSchema,
 } from './controller';
-import {
-  getBatchCollectionDataFromCache,
-  clearCollectionCache,
-} from './service';
 
 async function collectionRoutes(
   fastify: FastifyInstance,
@@ -65,37 +61,6 @@ async function collectionRoutes(
       schema: getNFTGOFloorPriceSchema,
     },
     getNFTGOFloorPriceHandler
-  );
-
-  fastify.post<{ Body: { slugs: string[] } }>(
-    '/clear-cache',
-    {
-      schema: {
-        body: {
-          type: 'object',
-          properties: {
-            slugs: {
-              type: 'array',
-              items: { type: 'string' },
-            },
-          },
-          required: ['slugs'],
-        },
-      },
-    },
-    async (request, reply) => {
-      try {
-        const { slugs } = request.body;
-        await clearCollectionCache(slugs);
-        return reply.send({
-          success: true,
-          message: 'Cache cleared successfully',
-        });
-      } catch (error) {
-        request.log.error('Error clearing cache:', error);
-        return reply.code(500).send({ error: 'Failed to clear cache' });
-      }
-    }
   );
 }
 
