@@ -5,8 +5,8 @@ dotenv.config();
 
 const OPENSEA_API_BASE = 'https://api.opensea.io/api/v2';
 const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY || '';
-const NFTGO_API_BASE = 'https://data-api.nftgo.io/eth/v1';
-const NFTGO_API_KEY = process.env.NFTGO_API_KEY || '';
+const ALCHEMY_NFT_API_BASE = 'https://eth-mainnet.g.alchemy.com/nft/v3';
+const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || '';
 const FETCH_TIMEOUT_MS = 15000; // 15 seconds
 
 // --- Retry/Backoff Constants ---
@@ -27,18 +27,17 @@ export interface BasicCollectionInfo {
   market_cap: number;
 }
 
-// Floor price data structure from NFTGO
-interface NftgoFloorPrice {
-  marketplace: string;
-  floor_price: number;
-}
-
-// Floor price data structure from OpenSea /listings/collection/{slug}/best
-interface OpenseaListing {
-  price?: {
-    current?: {
-      value?: string; // Price is in wei as a string
-    };
+// Floor price data structure from Alchemy
+interface AlchemyFloorPriceResponse {
+  openSea?: {
+    floorPrice?: number; // Price in ETH
+    priceCurrency?: string;
+    collectionUrl?: string;
+  };
+  looksRare?: {
+    floorPrice?: number; // Price in ETH
+    priceCurrency?: string;
+    collectionUrl?: string;
   };
 }
 
@@ -176,195 +175,85 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Fetches floor price data from NFTGO API.
+ * Fetches floor price from Alchemy NFT API.
+ * Exported for direct use by the dedicated API endpoint.
  */
-async function fetchNFTGOFloorPriceInternal(
+export async function fetchAlchemyFloorPriceInternal(
   contractAddress: string
-): Promise<NftgoFloorPrice[]> {
-  if (!NFTGO_API_KEY) {
-    console.error('[Util NFTGO Fetch] API key is missing!');
-    throw new Error('NFTGO API key is missing');
+): Promise<number> {
+  if (!ALCHEMY_API_KEY) {
+    console.error('[Util Alchemy Fetch] API key is missing!');
+    return 0; // Cannot proceed without key
   }
 
-  const url = `${NFTGO_API_BASE}/marketplace/${contractAddress.toLowerCase()}/floor-price`;
+  const url = `${ALCHEMY_NFT_API_BASE}/${ALCHEMY_API_KEY}/getFloorPrice?contractAddress=${contractAddress.toLowerCase()}`;
   console.log(
-    `[Util NFTGO Fetch] Attempting for: ${contractAddress} at ${url}`
+    `[Util Alchemy Fetch] Attempting for: ${contractAddress} at ${url}`
   );
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await axios.get(url, {
+      const response = await axios.get<AlchemyFloorPriceResponse>(url, {
         headers: {
           Accept: 'application/json',
-          'X-API-KEY': NFTGO_API_KEY,
+          // No specific API key header for Alchemy NFT API in URL path format
         },
         timeout: FETCH_TIMEOUT_MS,
       });
 
-      if (
-        !response.data ||
-        !Array.isArray(response.data.collection_floor_price_list)
-      ) {
-        console.warn(
-          `[Util NFTGO Fetch WARN] Invalid or empty floor price list for ${contractAddress}`
+      const data = response.data;
+      // Prioritize OpenSea floor price if available, then LooksRare
+      const osPrice = data?.openSea?.floorPrice;
+      const lrPrice = data?.looksRare?.floorPrice;
+
+      if (osPrice && osPrice > 0) {
+        console.log(
+          `[Util Alchemy Fetch] Success (OpenSea) for ${contractAddress}: ${osPrice} ETH`
         );
-        return [];
-      }
-
-      const floorPrices = response.data.collection_floor_price_list
-        .map((item: any) => ({
-          marketplace: item.marketplace_name,
-          floor_price:
-            typeof item.floor_price?.value === 'number'
-              ? item.floor_price.value
-              : 0,
-        }))
-        .filter((item: NftgoFloorPrice) => item.floor_price > 0);
-
-      console.log(
-        `[Util NFTGO Fetch] Success. Processed ${floorPrices.length} floor prices for ${contractAddress}`
-      );
-      return floorPrices;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
-        const retryAfterHeader = error.response?.headers?.['retry-after'];
-        let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-        delay = Math.min(delay, MAX_RETRY_DELAY_MS);
-
-        console.warn(
-          `[Util NFTGO Fetch WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${contractAddress}. Status: ${status || 'N/A'}. Message: ${error.message}`
+        return osPrice;
+      } else if (lrPrice && lrPrice > 0) {
+        console.log(
+          `[Util Alchemy Fetch] Success (LooksRare) for ${contractAddress}: ${lrPrice} ETH`
         );
-
-        if (status === 429) {
-          let waitTime = delay; // Default exponential backoff delay
-          if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
-            const headerWaitMs = Number(retryAfterHeader) * 1000 + 200; // Header delay + buffer
-            // Take the max of calculated backoff and header, but cap at 25 seconds
-            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000); // Cap at 25000 ms
-          }
-          if (attempt < MAX_RETRIES) {
-            console.log(
-              `   Rate limit hit (NFTGO Floor). Retrying after ${waitTime / 1000}s... (Header was: ${retryAfterHeader ?? 'N/A'})`
-            );
-            await new Promise((resolve) => setTimeout(resolve, waitTime));
-            continue;
-          }
-        } else if (status === 404) {
-          console.warn(
-            `   Collection ${contractAddress} not found on NFTGO (404). Returning [].`
-          );
-          return [];
-        } else if (status && status >= 500) {
-          // Retry on server errors
-          if (attempt < MAX_RETRIES) {
-            console.log(
-              `   Server error (${status}). Retrying after ${delay / 1000}s...`
-            );
-            await new Promise((resolve) => setTimeout(resolve, delay));
-            continue;
-          }
-        } else {
-          // Other client errors (400, 401, 403 etc.) or unknown - Throw to caller? Or return []?
-          // Let's throw for unexpected client errors here, handled by fetchFloorPriceData
-          console.error(
-            `   Non-retryable Axios error. Status: ${status || 'N/A'}. Throwing.`
-          );
-          throw error;
-        }
+        return lrPrice;
       } else {
-        // Non-Axios error - Throw to caller
-        console.error(
-          `[Util NFTGO Fetch Error] Non-Axios error for ${contractAddress}:`,
-          error
+        console.warn(
+          `[Util Alchemy Fetch WARN] No valid floor price found in Alchemy response for ${contractAddress}`
         );
-        throw error;
+        return 0; // No valid price found
       }
-      // If loop finishes after max retries on retryable errors
-      console.error(
-        `[Util NFTGO Fetch Error] Max retries (${MAX_RETRIES}) reached for ${contractAddress}. Returning [].`
-      );
-    } // End catch
-  } // End for loop
-
-  return []; // Return empty if max retries hit
-}
-
-/**
- * Fetches floor price from OpenSea API (/listings/collection/{slug}/best) as a fallback.
- */
-async function fetchOpenSeaFloorPriceInternal(slug: string): Promise<number> {
-  const url = `${OPENSEA_API_BASE}/listings/collection/${slug}/best`;
-  console.log(
-    `[Util OS Floor Fetch] Attempting fallback for: ${slug} at ${url}`
-  );
-
-  if (!OPENSEA_API_KEY) {
-    console.error('[Util OS Floor Fetch] OpenSea API Key is missing.');
-    // Don't throw, just return 0 as it's a fallback
-    return 0;
-  }
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const response = await axios.get<{ listings: OpenseaListing[] }>(url, {
-        headers: {
-          Accept: 'application/json',
-          'X-API-KEY': OPENSEA_API_KEY,
-        },
-        timeout: FETCH_TIMEOUT_MS,
-      });
-
-      const floorData = response.data.listings?.[0]?.price?.current?.value;
-      if (floorData) {
-        try {
-          const floorPriceWei = BigInt(floorData);
-          const floorPriceEth = Number(floorPriceWei) / 1e18;
-          if (!isNaN(floorPriceEth)) {
-            console.log(
-              `[Util OS Floor Fetch] Success for ${slug}: ${floorPriceEth} ETH`
-            );
-            return floorPriceEth;
-          }
-        } catch (e) {
-          console.error(
-            `[Util OS Floor Fetch] Error parsing price ${floorData} for ${slug}:`,
-            e
-          );
-        }
-      }
-      console.warn(
-        `[Util OS Floor Fetch WARN] Could not determine OpenSea floor price for ${slug}.`
-      );
-      return 0; // Return 0 if no price found or parsing failed, don't retry
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
-        const retryAfterHeader = error.response?.headers?.['retry-after'];
+        const retryAfterHeader = error.response?.headers?.['retry-after']; // Check if Alchemy uses this
         let delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
         delay = Math.min(delay, MAX_RETRY_DELAY_MS);
 
         console.warn(
-          `[Util OS Floor Fetch WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${slug}. Status: ${status || 'N/A'}. Message: ${error.message}`
+          `[Util Alchemy Fetch WARN] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed for ${contractAddress}. Status: ${status || 'N/A'}. Message: ${error.message}`
         );
 
         if (status === 429) {
           let waitTime = delay;
+          // Apply same capping logic, assuming Alchemy might send Retry-After
           if (retryAfterHeader && !isNaN(Number(retryAfterHeader))) {
-            waitTime = Math.max(delay, Number(retryAfterHeader) * 1000 + 200);
+            const headerWaitMs = Number(retryAfterHeader) * 1000 + 200;
+            waitTime = Math.min(Math.max(delay, headerWaitMs), 25000); // Cap at 25s
           }
           if (attempt < MAX_RETRIES) {
             console.log(
-              `   Rate limit hit. Retrying after ${waitTime / 1000}s...`
+              `   Rate limit hit (Alchemy Floor). Retrying after ${waitTime / 1000}s... (Header was: ${retryAfterHeader ?? 'N/A'})`
             );
             await new Promise((resolve) => setTimeout(resolve, waitTime));
             continue;
           }
         } else if (status === 404) {
+          // Alchemy might return 200 OK with empty data instead of 404 for unknown contracts
+          // We already handle empty data in the success path. If it's a true 404, log it.
           console.warn(
-            `   OS listings not found (404) for collection ${slug}. Returning 0.`
+            `   Collection ${contractAddress} not found via Alchemy (404). Returning 0.`
           );
-          return 0; // Return 0 for 404, don't retry
+          return 0;
         } else if (status && status >= 500) {
           // Retry on server errors
           if (attempt < MAX_RETRIES) {
@@ -375,23 +264,23 @@ async function fetchOpenSeaFloorPriceInternal(slug: string): Promise<number> {
             continue;
           }
         } else {
-          // Other client errors - don't retry fallback
+          // Other client errors - don't retry
           console.error(
             `   Non-retryable Axios error. Status: ${status || 'N/A'}. Returning 0.`
           );
           return 0;
         }
       } else {
-        // Non-Axios error - don't retry fallback
+        // Non-Axios error - don't retry
         console.error(
-          `[Util OS Floor Fetch Error] Non-Axios error for ${slug}:`,
+          `[Util Alchemy Fetch Error] Non-Axios error for ${contractAddress}:`,
           error
         );
         return 0;
       }
       // If loop finishes after max retries on retryable errors
       console.error(
-        `[Util OS Floor Fetch Error] Max retries (${MAX_RETRIES}) reached for ${slug}. Returning 0.`
+        `[Util Alchemy Fetch Error] Max retries (${MAX_RETRIES}) reached for ${contractAddress}. Returning 0.`
       );
     } // End catch
   } // End for loop
@@ -400,84 +289,31 @@ async function fetchOpenSeaFloorPriceInternal(slug: string): Promise<number> {
 }
 
 /**
- * Fetches floor price, trying NFTGO first and falling back to OpenSea.
+ * Fetches floor price using the Alchemy API.
  */
 export async function fetchFloorPriceData(
   contractAddress: string,
-  slug: string
+  slug: string // Keep slug for potential future use or logging, though not used in Alchemy call
 ): Promise<{ floor_price: number }> {
   try {
-    const nftgoPrices = await fetchNFTGOFloorPriceInternal(contractAddress);
-
-    // Prioritize OpenSea price from NFTGO if available
-    const nftgoOpenseaPrice = nftgoPrices.find(
-      (p) => p.marketplace.toLowerCase() === 'opensea'
-    );
-
-    if (nftgoOpenseaPrice && nftgoOpenseaPrice.floor_price > 0) {
-      console.log(
-        `[Util Fetch Floor] Using NFTGO (OpenSea) floor price for ${contractAddress}: ${nftgoOpenseaPrice.floor_price} ETH`
-      );
-      return { floor_price: nftgoOpenseaPrice.floor_price };
-    }
-
-    // If no specific OpenSea price from NFTGO, use the highest price from NFTGO (if any)
-    if (nftgoPrices.length > 0) {
-      const highestNftgoPrice = nftgoPrices.reduce(
-        (max, p) => (p.floor_price > max ? p.floor_price : max),
-        0
-      );
-      if (highestNftgoPrice > 0) {
-        console.log(
-          `[Util Fetch Floor] Using highest NFTGO floor price for ${contractAddress}: ${highestNftgoPrice} ETH`
-        );
-        return { floor_price: highestNftgoPrice };
-      }
-    }
-
-    // If NFTGO returned no usable data, try OpenSea directly
-    console.warn(
-      `[Util Fetch Floor] NFTGO data unusable for ${contractAddress}. Falling back to OpenSea for slug ${slug}.`
-    );
-    const openseaPrice = await fetchOpenSeaFloorPriceInternal(slug);
-    return { floor_price: openseaPrice };
+    // Only call Alchemy now
+    const alchemyPrice = await fetchAlchemyFloorPriceInternal(contractAddress);
+    return { floor_price: alchemyPrice };
   } catch (error) {
-    // Catch errors from fetchNFTGOFloorPriceInternal if it threw something other than 404
-    // Make this log concise as well
-    if (axios.isAxiosError(error)) {
-      console.error(
-        `[Util Fetch Floor] Error during NFTGO fetch for ${contractAddress} (Status: ${error.response?.status || 'N/A'}, Msg: ${error.message}). Trying OpenSea fallback.`,
-        error.response?.data
-          ? `| Data: ${JSON.stringify(error.response.data)}`
-          : ''
-      );
-    } else {
-      console.error(
-        `[Util Fetch Floor] Non-Axios error during NFTGO fetch for ${contractAddress}, trying OpenSea fallback:`,
-        error
-      );
-    }
-
-    // Fallback to OpenSea if NFTGO fetch failed unexpectedly
-    try {
-      const openseaPrice = await fetchOpenSeaFloorPriceInternal(slug);
-      return { floor_price: openseaPrice };
-    } catch (fallbackError) {
-      console.error(
-        `[Util Fetch Floor] OpenSea fallback also failed for ${slug}:`,
-        fallbackError
-      );
-      return { floor_price: 0 }; // Final fallback
-    }
+    // This catch block might be less relevant now if fetchAlchemyFloorPriceInternal returns 0 on error
+    // But keep it for unexpected throws
+    console.error(
+      `[Util Fetch Floor] Unexpected error fetching Alchemy floor price for ${contractAddress} (Slug: ${slug}):`,
+      error
+    );
+    return { floor_price: 0 }; // Final fallback
   }
 }
 
 // Placeholder for the main combined fetcher function
 export interface CombinedCollectionData
   extends Omit<BasicCollectionInfo, 'stats'> {
-  // Omit nested stats
   floor_price: number;
-  // Include flattened stats here
   total_supply: number;
   num_owners: number;
   total_volume: number;
@@ -491,7 +327,9 @@ export async function fetchCollectionData(
   console.log(
     `[Util Fetch Combined] Fetching all data for ${slug} (${contractAddress})`
   );
+  // Still fetch OpenSea info in parallel
   const infoPromise = fetchSingleCollectionInfo(slug);
+  // Fetch floor price using the updated function (which now uses Alchemy)
   const pricePromise = fetchFloorPriceData(contractAddress, slug);
 
   const [infoResult, priceResult] = await Promise.allSettled([
@@ -516,7 +354,7 @@ export async function fetchCollectionData(
         };
 
   const floor_price =
-    priceResult.status === 'fulfilled' ? priceResult.value.floor_price : 0; // Default price if fetch failed
+    priceResult.status === 'fulfilled' ? priceResult.value.floor_price : 0;
 
   if (infoResult.status === 'rejected') {
     console.error(
@@ -525,8 +363,9 @@ export async function fetchCollectionData(
     );
   }
   if (priceResult.status === 'rejected') {
+    // This might be less common now if fetchFloorPriceData's internal call handles errors by returning 0
     console.error(
-      `[Util Fetch Combined] Failed to fetch floor price for ${contractAddress}/${slug}:`,
+      `[Util Fetch Combined] Failed during floor price fetch for ${contractAddress}/${slug}:`,
       priceResult.reason
     );
   }

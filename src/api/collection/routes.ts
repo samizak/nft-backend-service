@@ -1,10 +1,8 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import {
   getBatchCollections,
-  getNFTGOCollectionInfoHandler,
-  getNFTGOCollectionInfoSchema,
-  getNFTGOFloorPriceHandler,
-  getNFTGOFloorPriceSchema,
+  getAlchemyFloorPriceHandler,
+  getAlchemyFloorPriceSchema,
 } from './controller';
 
 async function collectionRoutes(
@@ -18,14 +16,28 @@ async function collectionRoutes(
       schema: {
         body: {
           type: 'object',
-          required: ['collection_slugs'],
+          required: ['collections'],
           properties: {
-            collection_slugs: {
+            collections: {
               type: 'array',
-              items: {
-                type: 'string',
-              },
+              description: 'Array of collection identifiers',
               minItems: 1,
+              maxItems: 50,
+              items: {
+                type: 'object',
+                properties: {
+                  slug: {
+                    type: 'string',
+                    description:
+                      'OpenSea collection slug (required if contract missing)',
+                  },
+                  contract: {
+                    type: 'string',
+                    description:
+                      'Collection contract address (required if slug missing)',
+                  },
+                },
+              },
             },
           },
         },
@@ -35,32 +47,48 @@ async function collectionRoutes(
             properties: {
               data: {
                 type: 'object',
-                additionalProperties: true,
+                description: 'Map of contractAddress to collection data',
+                additionalProperties: {
+                  type: 'object',
+                  properties: {
+                    slug: { type: ['string', 'null'] },
+                    name: { type: ['string', 'null'] },
+                    description: { type: ['string', 'null'] },
+                    image_url: { type: ['string', 'null'] },
+                    safelist_status: { type: ['string', 'null'] },
+                    floor_price: { type: 'number' },
+                    total_supply: { type: 'number' },
+                    num_owners: { type: 'number' },
+                    total_volume: { type: 'number' },
+                    market_cap: { type: 'number' },
+                  },
+                },
               },
             },
           },
+          400: { $ref: 'BadRequest#' },
+          500: { $ref: 'InternalServerError#' },
         },
       },
     },
     getBatchCollections
   );
 
-  // POST /collection/nftgo-info
-  fastify.post(
-    '/nftgo-info',
-    {
-      schema: getNFTGOCollectionInfoSchema,
-    },
-    getNFTGOCollectionInfoHandler
-  );
-
-  // GET /collection/nftgo-floor-price/:contract_address
+  // GET /collection/alchemy-floor-price/:contract_address
   fastify.get(
-    '/nftgo-floor-price/:contract_address',
+    '/alchemy-floor-price/:contract_address',
     {
-      schema: getNFTGOFloorPriceSchema,
+      schema: {
+        params: getAlchemyFloorPriceSchema.params,
+        response: {
+          200: getAlchemyFloorPriceSchema.response[200],
+          400: { $ref: 'BadRequest#' },
+          500: { $ref: 'InternalServerError#' },
+          503: { $ref: 'ServiceUnavailable#' },
+        },
+      },
     },
-    getNFTGOFloorPriceHandler
+    getAlchemyFloorPriceHandler
   );
 }
 

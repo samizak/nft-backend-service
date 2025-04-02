@@ -47,6 +47,65 @@ const server = fastify({
     require('qs').parse(str, { parameterLimit: 5000 }),
 });
 
+// --- Register Shared Schemas BEFORE routes ---
+
+// Standard Error Response Schema
+const errorSchema = {
+  $id: 'ErrorResponse', // ID to reference
+  type: 'object',
+  properties: {
+    error: { type: 'string' },
+  },
+};
+
+// Specific Schemas reusing the standard error format
+const badRequestSchema = {
+  $id: 'BadRequest',
+  description: 'Invalid request format or parameters',
+  allOf: [{ $ref: 'ErrorResponse' }],
+};
+
+const unauthorizedSchema = {
+  $id: 'Unauthorized',
+  description: 'Authentication failed or required',
+  allOf: [{ $ref: 'ErrorResponse' }],
+};
+
+const forbiddenSchema = {
+  $id: 'Forbidden',
+  description: 'Authenticated user lacks permission',
+  allOf: [{ $ref: 'ErrorResponse' }],
+};
+
+const notFoundSchema = {
+  $id: 'NotFound',
+  description: 'Resource not found',
+  allOf: [{ $ref: 'ErrorResponse' }],
+};
+
+const internalServerErrorSchema = {
+  $id: 'InternalServerError',
+  description: 'An unexpected server error occurred',
+  allOf: [{ $ref: 'ErrorResponse' }],
+};
+
+const serviceUnavailableSchema = {
+  $id: 'ServiceUnavailable',
+  description: 'Service is temporarily unavailable',
+  allOf: [{ $ref: 'ErrorResponse' }],
+};
+
+// Add schemas to Fastify instance
+server.addSchema(errorSchema);
+server.addSchema(badRequestSchema);
+server.addSchema(unauthorizedSchema);
+server.addSchema(forbiddenSchema);
+server.addSchema(notFoundSchema);
+server.addSchema(internalServerErrorSchema);
+server.addSchema(serviceUnavailableSchema);
+
+// --- End Shared Schemas ---
+
 server.register(cors, {
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],

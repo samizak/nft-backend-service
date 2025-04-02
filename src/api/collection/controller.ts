@@ -1,10 +1,9 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
+import { ethers } from 'ethers'; // Import ethers for address validation
 import { BatchCollectionsRequestBody } from './types';
-import {
-  fetchNFTGOCollectionInfo,
-  fetchNFTGOFloorPrice,
-} from '../../services/nftgoFetcher';
 import { fetchBatchCollectionData } from './service';
+// Import necessary functions directly now that fetchAlchemyFloorPriceInternal is exported
+import { fetchAlchemyFloorPriceInternal } from '../../utils/collectionApi';
 
 export async function getBatchCollections(
   request: FastifyRequest<{
@@ -13,8 +12,10 @@ export async function getBatchCollections(
   reply: FastifyReply
 ) {
   try {
+    // Revert to using original body structure
     const { collection_slugs, contract_addresses } = request.body;
 
+    // Original validation
     if (
       !Array.isArray(collection_slugs) ||
       !Array.isArray(contract_addresses)
@@ -31,122 +32,104 @@ export async function getBatchCollections(
       });
     }
 
+    // Optional: Add address validation for contract_addresses here if desired
+    // for (const addr of contract_addresses) {
+    //    if (!ethers.isAddress(addr)) {
+    //        return reply.code(400).send({ error: `Invalid contract address format: ${addr}` });
+    //    }
+    // }
+
     const result = await fetchBatchCollectionData(
       collection_slugs,
       contract_addresses
     );
-    return reply.send(result);
+    // Wrap result in data object as before
+    return reply.send({ data: result });
   } catch (error) {
     request.log.error('Error in getBatchCollections:', error);
     return reply.code(500).send({ error: 'Internal server error' });
   }
 }
 
-interface GetNFTGOCollectionInfoBody {
-  collections: string[];
-}
+// Remove old NFTGO handler and schema
+// export const getNFTGOCollectionInfoSchema = { ... };
+// export const getNFTGOCollectionInfoHandler = async (...) => { ... };
 
-export const getNFTGOCollectionInfoSchema = {
-  body: {
-    type: 'object',
-    properties: {
-      collections: {
-        type: 'array',
-        items: { type: 'string' },
-        maxItems: 50,
-      },
-    },
-    required: ['collections'],
-  },
-};
+// Remove old NFTGO handler and schema
+// export const getNFTGOFloorPriceSchema = { ... };
+// export const getNFTGOFloorPriceHandler = async (...) => { ... };
 
-export const getNFTGOCollectionInfoHandler = async (
-  request: FastifyRequest<{ Body: GetNFTGOCollectionInfoBody }>,
-  reply: FastifyReply
-) => {
-  const { collections } = request.body;
+// --- New Alchemy Floor Price Endpoint ---
 
-  try {
-    const results = await fetchNFTGOCollectionInfo(collections);
-    reply.code(200).send({ collections: results });
-  } catch (error) {
-    request.log.error(
-      { err: error, body: request.body },
-      'Failed to get NFTGO collection info'
-    );
-
-    if (error instanceof Error) {
-      if (error.message.includes('NFTGO_API_KEY')) {
-        return reply
-          .code(500)
-          .send({ error: 'Internal server configuration error.' });
-      }
-      if (error.message.includes('429')) {
-        return reply
-          .code(429)
-          .send({ error: 'Rate limit exceeded when contacting NFTGO.' });
-      }
-    }
-
-    reply.code(500).send({
-      error:
-        'An internal server error occurred while fetching collection info.',
-    });
-  }
-};
-
-interface GetNFTGOFloorPriceParams {
+interface GetAlchemyFloorPriceParams {
   contract_address: string;
 }
 
-export const getNFTGOFloorPriceSchema = {
+export const getAlchemyFloorPriceSchema = {
   params: {
     type: 'object',
     properties: {
       contract_address: {
         type: 'string',
-        pattern: '^0x[a-fA-F0-9]{40}$',
+        description: 'Ethereum contract address for the NFT collection',
       },
     },
     required: ['contract_address'],
   },
+  response: {
+    200: {
+      type: 'object',
+      properties: {
+        contractAddress: { type: 'string' },
+        floorPriceEth: { type: 'number' },
+        source: { type: 'string', enum: ['Alchemy'] },
+      },
+    },
+    400: { type: 'object', properties: { error: { type: 'string' } } },
+    // 404 removed as we now return 200 with 0 price for not found
+    // 404: { type: 'object', properties: { error: { type: 'string' } } },
+    500: { type: 'object', properties: { error: { type: 'string' } } },
+    503: { type: 'object', properties: { error: { type: 'string' } } },
+  },
 };
 
-export const getNFTGOFloorPriceHandler = async (
-  request: FastifyRequest<{ Params: GetNFTGOFloorPriceParams }>,
+export const getAlchemyFloorPriceHandler = async (
+  request: FastifyRequest<{ Params: GetAlchemyFloorPriceParams }>,
   reply: FastifyReply
 ) => {
   const { contract_address } = request.params;
 
+  if (!ethers.isAddress(contract_address)) {
+    return reply.code(400).send({ error: 'Invalid contract address format.' });
+  }
+
+  if (!process.env.ALCHEMY_API_KEY) {
+    request.log.error('[API Alchemy Floor] ALCHEMY_API_KEY is not configured.');
+    return reply
+      .code(503)
+      .send({ error: 'Floor price service is not configured.' });
+  }
+
   try {
-    const results = await fetchNFTGOFloorPrice(contract_address);
-    reply.code(200).send({ floor_prices: results });
+    // Call the now-exported internal function directly
+    const priceResult = await fetchAlchemyFloorPriceInternal(contract_address);
+
+    // Return 200 OK with price (even if 0, indicates successful check but no floor found)
+    return reply.code(200).send({
+      contractAddress: contract_address,
+      floorPriceEth: priceResult,
+      source: 'Alchemy',
+    });
   } catch (error) {
+    // Log the specific error encountered during the fetch
     request.log.error(
-      { err: error, params: request.params },
-      'Failed to get NFTGO floor price'
+      { err: error, contract: contract_address }, // Log contract address with error
+      '[API Alchemy Floor] Error calling fetchAlchemyFloorPriceInternal'
     );
-
-    if (error instanceof Error) {
-      if (error.message.includes('NFTGO_API_KEY')) {
-        return reply
-          .code(500)
-          .send({ error: 'Internal server configuration error.' });
-      }
-      if (error.message.includes('Invalid contract address format')) {
-        return reply
-          .code(400)
-          .send({ error: 'Invalid contract address format.' });
-      }
-      if (error.message.includes('429')) {
-        return reply
-          .code(429)
-          .send({ error: 'Rate limit exceeded when contacting NFTGO.' });
-      }
-    }
-
-    reply.code(500).send({
-      error: 'An internal server error occurred while fetching floor price.',
+    // Send generic 500
+    return reply.code(500).send({
+      error:
+        'An internal server error occurred while fetching the floor price.',
     });
   }
 };
