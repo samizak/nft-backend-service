@@ -64,16 +64,21 @@ const mapRawEventToActivityEvent = (
   }
   let createdTimestamp: number;
   try {
-    createdTimestamp = Math.floor(
-      new Date(rawEvent.event_timestamp).getTime() / 1000
+    // Get milliseconds directly from getTime(), no division needed
+    createdTimestamp = new Date(rawEvent.event_timestamp).getTime();
+    // Handle potential invalid date parsing
+    if (isNaN(createdTimestamp)) {
+      console.warn(
+        `[Event Service] Invalid event_timestamp encountered: ${rawEvent.event_timestamp}. Setting timestamp to 0.`
+      );
+      createdTimestamp = 0; // Or handle as appropriate, maybe Date.now()?
+    }
+  } catch (error) {
+    console.error(
+      `[Event Service] Error parsing event_timestamp: ${rawEvent.event_timestamp}`,
+      error
     );
-    if (isNaN(createdTimestamp)) throw new Error('Invalid date format');
-  } catch (e) {
-    console.warn(
-      `Filtering event (${rawEvent.event_type}): Invalid timestamp format.`,
-      { timestamp: rawEvent.event_timestamp, error: e }
-    );
-    return null;
+    createdTimestamp = 0; // Default to 0 on error
   }
   const nft: ActivityEvent['nft'] = {
     identifier: rawEvent.nft.identifier,
