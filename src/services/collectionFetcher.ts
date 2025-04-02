@@ -89,7 +89,7 @@ async function fetchSingleCollectionInfo(
       name: collection.name ?? null,
       description: collection.description ?? null,
       image_url: collection.image_url ?? null,
-      safelist_status: collection.safelist_request_status ?? null,
+      safelist_status: collection.safelist_status ?? null,
       // Safely access nested stats, providing defaults
       stats: {
         total_supply: collection.stats?.total_supply ?? 0,

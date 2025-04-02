@@ -107,7 +107,7 @@ export async function fetchSingleCollectionInfo(
       name: collectionData.name ?? null,
       description: collectionData.description ?? null,
       image_url: collectionData.image_url ?? null,
-      safelist_status: collectionData.safelist_request_status ?? null, // Check this path
+      safelist_status: collectionData.safelist_status ?? null, // Check this path
       // Access stats safely, adjust paths based on logged response
       total_supply:
         collectionData.total_supply ?? collectionData.stats?.total_supply ?? 0,
