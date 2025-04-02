@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import { env } from 'process';
+import redisClient from '../../lib/redis';
 
 interface OpenSeaAccount {
   address: string;
@@ -11,9 +12,47 @@ interface OpenSeaErrorResponse {
   errors?: string[];
 }
 
+// --- Constants for Caching ---
+const CACHE_PREFIX = 'user:opensea:';
+const CACHE_TTL_SECONDS = 60 * 60; // 1 hour TTL
+
 export const getUserProfileFromOpenSea = async (
   id: string
 ): Promise<OpenSeaAccount> => {
+  // Use lowercase for consistency in cache keys, assuming id is typically an address
+  const lowerCaseId = id.toLowerCase();
+  const cacheKey = `${CACHE_PREFIX}${lowerCaseId}`;
+
+  // 1. Check Cache First
+  try {
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[Cache] Hit for user profile: ${lowerCaseId}`);
+      try {
+        const parsedData: OpenSeaAccount = JSON.parse(cachedData);
+        // Basic validation
+        if (parsedData && parsedData.address) {
+          return parsedData;
+        }
+        console.warn(
+          `[Cache] Invalid data structure in cache for ${cacheKey}. Fetching fresh.`
+        );
+      } catch (parseError) {
+        console.error(
+          `[Cache] Failed to parse cached profile for ${cacheKey}:`,
+          parseError
+        );
+        // Proceed to fetch fresh data if parse fails
+      }
+    } else {
+      console.log(`[Cache] Miss for user profile: ${lowerCaseId}`);
+    }
+  } catch (redisError) {
+    console.error(`[Cache] Redis GET error for ${cacheKey}:`, redisError);
+    // Proceed to fetch from OpenSea if Redis read fails
+  }
+
+  // 2. Cache Miss or Redis Error: Fetch from OpenSea
   const openseaUrl = `https://api.opensea.io/api/v2/accounts/${id}`;
   const apiKey = env.OPENSEA_API_KEY;
 
@@ -23,13 +62,41 @@ export const getUserProfileFromOpenSea = async (
   }
 
   try {
+    console.log(`[OpenSea Fetch] Fetching profile for: ${id}`);
     const response = await axios.get<OpenSeaAccount>(openseaUrl, {
       headers: {
         accept: 'application/json',
         'x-api-key': apiKey,
       },
+      timeout: 10000, // 10 seconds
     });
-    return response.data;
+
+    const profileData = response.data;
+
+    // 3. Cache the successful result from OpenSea
+    if (profileData && profileData.address) {
+      try {
+        const cacheValue = JSON.stringify(profileData);
+        await redisClient.set(cacheKey, cacheValue, 'EX', CACHE_TTL_SECONDS);
+        console.log(
+          `[Cache] Stored profile for ${lowerCaseId} with TTL ${CACHE_TTL_SECONDS}s`
+        );
+      } catch (redisSetError) {
+        console.error(
+          `[Cache] Redis SET error for ${cacheKey}:`,
+          redisSetError
+        );
+        // Failed to cache, but proceed with returning data
+      }
+    } else {
+      console.warn(
+        `[OpenSea Fetch] Received invalid profile structure for ${id}. Not caching.`
+      );
+      // Potentially throw an error here if the structure is unexpected despite 200 OK?
+      // For now, we'll return it as is, but it won't be cached.
+    }
+
+    return profileData;
   } catch (error) {
     if (axios.isAxiosError(error)) {
       const axiosError = error as AxiosError<OpenSeaErrorResponse>;
