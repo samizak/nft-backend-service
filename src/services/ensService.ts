@@ -1,9 +1,15 @@
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
+import redisClient from '../lib/redis'; // Import Redis client
 
 dotenv.config();
 
 const ETH_RPC_URL = process.env.ETH_RPC_URL;
+
+// Cache constants
+const CACHE_PREFIX_RESOLVE = 'ens:resolve:';
+const CACHE_PREFIX_LOOKUP = 'ens:lookup:';
+const CACHE_TTL_SECONDS = 60 * 60 * 24; // Cache for 24 hours
 
 if (!ETH_RPC_URL) {
   console.error(
@@ -38,22 +44,42 @@ export const resolveEnsName = async (name: string): Promise<string | null> => {
     return null;
   }
 
+  const cacheKey = `${CACHE_PREFIX_RESOLVE}${name.toLowerCase()}`;
+
   try {
+    // 1. Check cache first
+    const cachedAddress = await redisClient.get(cacheKey);
+    if (cachedAddress) {
+      console.log(
+        `[ENS Service Cache HIT] Resolved ${name} to address: ${cachedAddress} from cache.`
+      );
+      // Ensure we return null if cache somehow stored 'null' string, though unlikely
+      return cachedAddress === 'null' ? null : cachedAddress;
+    }
+    console.log(`[ENS Service Cache MISS] for name: ${name}`);
+
+    // 2. Cache miss - perform live lookup
     const provider = getProvider();
     const address = await provider.resolveName(name);
 
     if (address) {
       console.log(`[ENS Service] Resolved ${name} to address: ${address}`);
+      // 3. Store successful lookup in cache
+      await redisClient.set(cacheKey, address, 'EX', CACHE_TTL_SECONDS);
+      console.log(
+        `[ENS Service Cache SET] Stored ${name} -> ${address} for ${CACHE_TTL_SECONDS}s`
+      );
     } else {
       console.log(`[ENS Service] Could not resolve ENS name: ${name}`);
+      // Optional: Cache null result? Caching negatives can prevent repeated failed lookups.
+      // await redisClient.set(cacheKey, 'null', 'EX', CACHE_TTL_SECONDS / 4); // Cache null for shorter time
     }
-    return address; // Returns null if not resolved
+    return address;
   } catch (error: any) {
     console.error(
       `[ENS Service] Error resolving ENS name ${name}:`,
       error.message || error
     );
-    // Don't throw, return null to indicate resolution failure gracefully to the API handler
     return null;
   }
 };
@@ -74,18 +100,40 @@ export const lookupEnsAddress = async (
     return null;
   }
 
+  // Use lowercase address for cache key consistency
+  const normalizedAddress = address.toLowerCase();
+  const cacheKey = `${CACHE_PREFIX_LOOKUP}${normalizedAddress}`;
+
   try {
+    // 1. Check cache
+    const cachedName = await redisClient.get(cacheKey);
+    if (cachedName) {
+      console.log(
+        `[ENS Service Cache HIT] Looked up ${address} to name: ${cachedName} from cache.`
+      );
+      return cachedName === 'null' ? null : cachedName;
+    }
+    console.log(`[ENS Service Cache MISS] for address: ${address}`);
+
+    // 2. Cache miss - perform live lookup
     const provider = getProvider();
-    const name = await provider.lookupAddress(address);
+    const name = await provider.lookupAddress(normalizedAddress); // Use normalized address for lookup too
 
     if (name) {
       console.log(`[ENS Service] Looked up ${address} to name: ${name}`);
+      // 3. Store successful lookup in cache
+      await redisClient.set(cacheKey, name, 'EX', CACHE_TTL_SECONDS);
+      console.log(
+        `[ENS Service Cache SET] Stored ${address} -> ${name} for ${CACHE_TTL_SECONDS}s`
+      );
     } else {
       console.log(
         `[ENS Service] Could not lookup ENS name for address: ${address}`
       );
+      // Optional: Cache null result?
+      // await redisClient.set(cacheKey, 'null', 'EX', CACHE_TTL_SECONDS / 4);
     }
-    return name; // Returns null if no primary name is set
+    return name;
   } catch (error: any) {
     console.error(
       `[ENS Service] Error looking up address ${address}:`,
