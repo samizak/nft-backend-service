@@ -97,13 +97,33 @@ const worker = new Worker<PortfolioJobData>(
   QUEUE_NAME,
   async (job: Job<PortfolioJobData>) => {
     const { address } = job.data;
+    const startTime = Date.now();
     console.log(
       `[Portfolio Worker] Starting calculation for address: ${address} (Job ID: ${job.id})`
     );
+    await job.updateProgress({
+      step: 'started',
+      nftCount: 0,
+      collectionCount: 0,
+      processedCollections: 0,
+    });
 
     try {
       // 1. Fetch all NFTs
+      console.log(`[Portfolio Worker] Step 1: Fetching NFTs for ${address}`);
       const allNfts = await fetchAllNfts(address);
+      const nftFetchTime = Date.now();
+      console.log(
+        `[Portfolio Worker] Fetched ${allNfts.length} NFTs in ${nftFetchTime - startTime}ms`
+      );
+
+      await job.updateProgress({
+        step: 'fetched_nfts',
+        nftCount: allNfts.length,
+        collectionCount: 0,
+        processedCollections: 0,
+      });
+
       if (allNfts.length === 0) {
         console.log(
           `[Portfolio Worker] No NFTs found for ${address}. Storing empty summary.`
@@ -124,10 +144,20 @@ const worker = new Worker<PortfolioJobData>(
           'EX',
           CACHE_TTL_SECONDS
         );
-        return; // Job done
+        await job.updateProgress({
+          step: 'completed',
+          nftCount: 0,
+          collectionCount: 0,
+          processedCollections: 0,
+        });
+        console.log(
+          `[Portfolio Worker] Empty summary stored for ${address}. Job completed.`
+        );
+        return;
       }
 
-      // 2. Group NFTs by collection and get unique slugs/addresses
+      // 2. Group NFTs by collection
+      console.log(`[Portfolio Worker] Step 2: Grouping NFTs by collection`);
       const collectionsMap = new Map<
         string,
         { slug: string; contractAddress: string; nfts: any[] }
@@ -146,44 +176,110 @@ const worker = new Worker<PortfolioJobData>(
         }
       });
       const uniqueCollections = Array.from(collectionsMap.values());
+      const collectionCount = uniqueCollections.length;
       console.log(
-        `[Portfolio Worker] Found ${uniqueCollections.length} unique collections for ${address}.`
+        `[Portfolio Worker] Found ${collectionCount} unique collections.`
       );
+      await job.updateProgress({
+        step: 'grouped_collections',
+        nftCount: allNfts.length,
+        collectionCount: collectionCount,
+        processedCollections: 0,
+      });
 
       // 3. Fetch collection floor prices WITH CONCURRENCY LIMIT
+      console.log(
+        `[Portfolio Worker] Step 3: Fetching data for ${collectionCount} collections (Concurrency: ${MAX_CONCURRENT_COLLECTION_FETCH})`
+      );
       const limit = pLimit(MAX_CONCURRENT_COLLECTION_FETCH);
+      let successfullyFetchedCounter = 0; // Use a counter
+      const totalCollectionsToFetch = uniqueCollections.length;
+
       const collectionDataPromises = uniqueCollections.map((col) =>
-        limit(() => fetchCollectionData(col.slug, col.contractAddress))
+        limit(async () => {
+          try {
+            const data = await fetchCollectionData(
+              col.slug,
+              col.contractAddress
+            );
+            successfullyFetchedCounter++; // Increment counter on success
+            // Update progress incrementally (e.g., every 5 successful fetches or if it's the last one)
+            if (
+              successfullyFetchedCounter % 5 === 0 ||
+              successfullyFetchedCounter === totalCollectionsToFetch
+            ) {
+              try {
+                await job.updateProgress({
+                  step: 'fetching_collections', // Use a distinct step name during fetching
+                  nftCount: allNfts.length,
+                  collectionCount: totalCollectionsToFetch,
+                  processedCollections: successfullyFetchedCounter,
+                });
+              } catch (progError) {
+                console.warn(
+                  `[Portfolio Worker] Failed to update incremental progress: ${progError}`
+                );
+              }
+            }
+            return {
+              status: 'fulfilled',
+              value: data,
+              slug: col.slug,
+            } as const;
+          } catch (error) {
+            console.warn(
+              `[Portfolio Worker] Failed fetch for collection ${col.slug}:`,
+              error instanceof Error ? error.message : error
+            );
+            // Do not increment counter on failure
+            return {
+              status: 'rejected',
+              reason: error,
+              slug: col.slug,
+            } as const;
+          }
+        })
       );
 
-      // Use Promise.allSettled to handle potential errors in individual fetches
-      const collectionDataResults = await Promise.allSettled(
-        collectionDataPromises
+      const collectionDataResults = await Promise.all(collectionDataPromises);
+      const collectionFetchTime = Date.now();
+      console.log(
+        `[Portfolio Worker] Collection fetching finished in ${collectionFetchTime - nftFetchTime}ms`
       );
 
       const collectionDataMap = new Map<string, CombinedCollectionData>();
-      collectionDataResults.forEach((result, index) => {
-        const slug = uniqueCollections[index].slug;
+      // Recalculate final count from results for accuracy, counter might be slightly off
+      // due to async nature if not handled carefully (though should be ok here)
+      const finalSuccessfulCount = collectionDataResults.filter(
+        (r) => r.status === 'fulfilled'
+      ).length;
+
+      collectionDataResults.forEach((result) => {
         if (result.status === 'fulfilled') {
-          collectionDataMap.set(slug, result.value);
+          collectionDataMap.set(result.slug, result.value);
         } else {
-          console.warn(
-            `[Portfolio Worker] Failed to fetch collection data for ${slug}:`,
-            result.reason
-          );
-          // Decide how to handle failures: Skip or store placeholder?
-          // Currently skipping (collection won't be valued)
+          // Already logged warning inside the map function
         }
       });
       console.log(
-        `[Portfolio Worker] Fetched data for ${collectionDataMap.size} collections for ${address}.`
+        `[Portfolio Worker] Successfully fetched data for ${finalSuccessfulCount}/${collectionCount} collections.`
       );
 
+      // Final progress update after all fetches are done
+      await job.updateProgress({
+        step: 'fetched_collections',
+        nftCount: allNfts.length,
+        collectionCount: collectionCount,
+        processedCollections: finalSuccessfulCount, // Use final accurate count
+      });
+
       // 4. Get current ETH price
+      console.log(`[Portfolio Worker] Step 4: Getting ETH price`);
       const ethPrices = getEthPrices();
-      const ethPriceUsd = ethPrices.usd; // May be undefined
+      const ethPriceUsd = ethPrices.usd;
 
       // 5. Calculate breakdown and totals
+      console.log(`[Portfolio Worker] Step 5: Calculating final summary`);
       let totalValueEth = 0;
       let totalNftCount = 0;
       const breakdown: PortfolioCollectionBreakdown[] = [];
@@ -214,20 +310,16 @@ const worker = new Worker<PortfolioJobData>(
           }
           breakdown.push(breakdownItem);
         } else {
-          console.log(
-            `[Portfolio Worker] Skipping collection ${slug} in breakdown (fetch failed).`
-          );
+          // Logged failure during fetch
         }
       });
 
-      // Sort breakdown by total ETH value descending
       breakdown.sort((a, b) => b.totalValueEth - a.totalValueEth);
 
-      // 6. Construct final summary data
       const summaryData: PortfolioSummaryData = {
         totalValueEth: totalValueEth,
         nftCount: totalNftCount,
-        collectionCount: collectionsMap.size,
+        collectionCount: collectionsMap.size, // Use actual size from map
         breakdown: breakdown,
         calculatedAt: new Date().toISOString(),
       };
@@ -235,8 +327,13 @@ const worker = new Worker<PortfolioJobData>(
         summaryData.totalValueUsd = totalValueEth * ethPriceUsd;
         summaryData.ethPriceUsd = ethPriceUsd;
       }
+      const calculationTime = Date.now();
+      console.log(
+        `[Portfolio Worker] Calculation logic finished in ${calculationTime - collectionFetchTime}ms`
+      );
 
-      // 7. Store result in Redis cache
+      // 6. Store result in Redis cache
+      console.log(`[Portfolio Worker] Step 6: Storing result in cache`);
       const cacheKey = `${CACHE_PREFIX}${address}`;
       await redisClient.set(
         cacheKey,
@@ -244,15 +341,30 @@ const worker = new Worker<PortfolioJobData>(
         'EX',
         CACHE_TTL_SECONDS
       );
+      const endTime = Date.now();
       console.log(
-        `[Portfolio Worker] Calculation complete for ${address}. Stored summary in cache.`
+        `[Portfolio Worker] Calculation complete for ${address}. Stored summary in cache. Total time: ${endTime - startTime}ms`
       );
+      await job.updateProgress({
+        step: 'completed',
+        nftCount: totalNftCount,
+        collectionCount: summaryData.collectionCount,
+        processedCollections: finalSuccessfulCount,
+      });
     } catch (error) {
       console.error(
         `[Portfolio Worker] Error processing job ${job.id} for address ${address}:`,
         error
       );
-      // Let BullMQ handle the retry based on job options
+      // Update progress on error
+      await job
+        .updateProgress({
+          step: 'error',
+        })
+        .catch((progError) =>
+          console.error('Failed to update progress on error:', progError)
+        ); // Don't let progress update fail the job
+
       throw error; // Re-throw the error to signal failure to BullMQ
     }
   },
@@ -315,6 +427,13 @@ export async function addPortfolioJob(
     // Should we throw or return null?
     return null; // Return null to indicate queuing failure
   }
+}
+
+// --- Function to Get a Specific Job ---
+export async function getPortfolioJob(
+  jobId: string
+): Promise<Job<PortfolioJobData> | undefined> {
+  return portfolioQueue.getJob(jobId);
 }
 
 // --- Worker Event Listeners ---
