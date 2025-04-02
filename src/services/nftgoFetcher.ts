@@ -1,8 +1,8 @@
-import axios, { AxiosError } from 'axios';
 import { env } from 'process';
+import axios, { AxiosError } from 'axios';
 import redisClient from '../lib/redis';
 
-const NFTGO_API_KEY = env.NFTGO_API_KEY;
+const NFTGO_API_KEY = env.NFTGO_API_KEY || '';
 const NFTGO_API_BASE = 'https://data-api.nftgo.io/eth/v1';
 const CACHE_PREFIX = 'nftgo:floor-price:';
 const CACHE_TTL_SECONDS = 60 * 60; // 1 hour cache
@@ -10,141 +10,160 @@ const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
-interface NFTGOFloorPrice {
+interface FloorPrice {
   marketplace: string;
   floor_price: number;
-  currency: string;
-  timestamp: number;
 }
 
-interface NFTGOFloorPriceResponse {
-  collection_floor_price_list: NFTGOFloorPrice[];
+interface CollectionInfo {
+  contract_address: string;
+  name: string;
+  symbol: string;
+  total_supply: number;
+  owner_count: number;
+  total_volume: number;
+  floor_price: number;
+  market_cap: number;
 }
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+export async function fetchNFTGOCollectionInfo(
+  contractAddresses: string[]
+): Promise<CollectionInfo[]> {
+  if (!NFTGO_API_KEY) {
+    throw new Error('NFTGO API key is missing');
+  }
+
+  if (!Array.isArray(contractAddresses) || contractAddresses.length === 0) {
+    throw new Error('Contract addresses array is required and cannot be empty');
+  }
+
+  const url = `${NFTGO_API_BASE}/collection/info`;
+  console.log(
+    `[NFTGO Fetch] Getting collection info for: ${contractAddresses.join(', ')}`
+  );
+
+  try {
+    const response = await axios.post(
+      url,
+      {
+        contract_addresses: contractAddresses,
+      },
+      {
+        headers: {
+          'X-API-KEY': NFTGO_API_KEY,
+          Accept: 'application/json',
+        },
+        timeout: 10000,
+      }
+    );
+
+    const data = response.data;
+    if (!data || !Array.isArray(data)) {
+      throw new Error('Invalid response format from NFTGO');
+    }
+
+    return data.map((item) => ({
+      contract_address: item.contract_address,
+      name: item.name || '',
+      symbol: item.symbol || '',
+      total_supply: parseInt(item.total_supply) || 0,
+      owner_count: parseInt(item.owner_count) || 0,
+      total_volume: parseFloat(item.total_volume) || 0,
+      floor_price: parseFloat(item.floor_price) || 0,
+      market_cap: parseFloat(item.market_cap) || 0,
+    }));
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      console.error(
+        `[NFTGO Fetch Error] Axios error for collections: ${error.response?.status} ${error.message}`
+      );
+      throw error;
+    } else {
+      console.error(
+        `[NFTGO Fetch Error] Non-Axios error for collections:`,
+        error
+      );
+      throw new Error(
+        `Failed to fetch collection info from NFTGO due to non-HTTP error`
+      );
+    }
+  }
+}
+
 export async function fetchNFTGOFloorPrice(
   contractAddress: string
-): Promise<NFTGOFloorPrice[]> {
+): Promise<FloorPrice[]> {
   if (!NFTGO_API_KEY) {
-    throw new Error('NFTGO_API_KEY is not set in environment variables');
+    console.error('[NFTGO Fetch] API key is missing!');
+    throw new Error('NFTGO API key is missing');
   }
 
-  // Validate contract address
-  if (!contractAddress.startsWith('0x') || contractAddress.length !== 42) {
-    throw new Error(
-      'Invalid contract address format. Expected 42-character hex string starting with 0x'
-    );
-  }
+  const url = `${NFTGO_API_BASE}/marketplace/${contractAddress.toLowerCase()}/floor-price`;
+  console.log(`[NFTGO Fetch] Making request to: ${url}`);
+  console.log(
+    `[NFTGO Fetch] Using API key: ${NFTGO_API_KEY.substring(0, 4)}...`
+  );
 
-  const cacheKey = `${CACHE_PREFIX}${contractAddress.toLowerCase()}`;
-
-  // Check cache first
   try {
-    const cachedData = await redisClient.get(cacheKey);
-    if (cachedData) {
-      const parsedData: NFTGOFloorPrice[] = JSON.parse(cachedData);
-      if (Array.isArray(parsedData) && parsedData.length > 0) {
-        return parsedData;
-      }
+    const response = await axios.get(url, {
+      headers: {
+        Accept: 'application/json',
+        'X-API-KEY': NFTGO_API_KEY,
+      },
+      timeout: FETCH_TIMEOUT_MS,
+    });
+
+    console.log(`[NFTGO Fetch] Response status: ${response.status}`);
+    console.log(`[NFTGO Fetch] Response headers:`, response.headers);
+    console.log(`[NFTGO Fetch] Full response data:`, response.data);
+
+    if (!response.data) {
+      console.error('[NFTGO Fetch] No data in response');
+      return [];
     }
-  } catch (error) {
-    console.error(
-      `[NFTGO Cache] Error reading cache for ${contractAddress}:`,
-      error
+
+    if (!response.data.collection_floor_price_list) {
+      console.error('[NFTGO Fetch] No collection_floor_price_list in response');
+      return [];
+    }
+
+    const floorPrices = response.data.collection_floor_price_list.map(
+      (item: any) => {
+        console.log(`[NFTGO Fetch] Processing floor price item:`, item);
+        return {
+          marketplace: item.marketplace_name,
+          floor_price: item.floor_price.value || 0,
+        };
+      }
     );
-  }
 
-  let retryCount = 0;
-  let lastError: Error | null = null;
-
-  while (retryCount < MAX_RETRIES) {
-    try {
-      console.log(
-        `[NFTGO Fetch] Attempting to fetch floor price for:`,
-        contractAddress
-      );
-      const response = await axios.get<NFTGOFloorPriceResponse>(
-        `${NFTGO_API_BASE}/marketplace/${contractAddress}/floor-price`,
-        {
-          headers: {
-            accept: 'application/json',
-            'X-API-KEY': NFTGO_API_KEY,
-          },
-          timeout: FETCH_TIMEOUT_MS,
-        }
-      );
-
-      console.log(`[NFTGO Fetch] Raw API Response:`, {
-        status: response.status,
-        headers: response.headers,
-        data: response.data,
+    console.log(`[NFTGO Fetch] Processed floor prices:`, floorPrices);
+    return floorPrices;
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      console.error(`[NFTGO Fetch Error] Axios error details:`, {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        headers: error.response?.headers,
+        data: error.response?.data,
+        message: error.message,
       });
 
-      const floorPrices = response.data.collection_floor_price_list || [];
-      console.log(
-        `[NFTGO Fetch] Successfully fetched floor prices for ${contractAddress}:`,
-        floorPrices
+      if (error.response?.status === 404) {
+        console.warn(
+          `[NFTGO Fetch] No floor price found for ${contractAddress}`
+        );
+        return [];
+      }
+      throw error;
+    } else {
+      console.error(`[NFTGO Fetch Error] Non-Axios error:`, error);
+      throw new Error(
+        `Failed to fetch floor price for ${contractAddress} due to non-HTTP error`
       );
-
-      // Cache the results
-      try {
-        await redisClient.set(
-          cacheKey,
-          JSON.stringify(floorPrices),
-          'EX',
-          CACHE_TTL_SECONDS
-        );
-      } catch (cacheError) {
-        console.error(
-          `[NFTGO Cache] Error caching floor price for ${contractAddress}:`,
-          cacheError
-        );
-      }
-
-      return floorPrices;
-    } catch (error) {
-      lastError = error as Error;
-      if (axios.isAxiosError(error)) {
-        const axiosError = error as AxiosError;
-        console.error(`[NFTGO Fetch] API Error:`, {
-          status: axiosError.response?.status,
-          statusText: axiosError.response?.statusText,
-          headers: axiosError.response?.headers,
-          data: axiosError.response?.data,
-          message: axiosError.message,
-          config: {
-            url: axiosError.config?.url,
-            headers: axiosError.config?.headers,
-          },
-        });
-
-        if (axiosError.response?.status === 429) {
-          const retryAfter = parseInt(
-            axiosError.response.headers['retry-after'] || '5'
-          );
-          await sleep(retryAfter * 1000);
-        } else if (axiosError.response && axiosError.response.status >= 500) {
-          await sleep(INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount));
-        } else {
-          throw error;
-        }
-      } else {
-        console.error(`[NFTGO Fetch] Non-API Error:`, error);
-        await sleep(INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount));
-      }
-      retryCount++;
     }
   }
-
-  if (retryCount === MAX_RETRIES && lastError) {
-    console.error(
-      `[NFTGO Fetch] Failed to fetch floor price after ${MAX_RETRIES} retries:`,
-      lastError
-    );
-    throw lastError;
-  }
-
-  return [];
 }

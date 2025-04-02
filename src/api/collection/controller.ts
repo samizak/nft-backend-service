@@ -5,6 +5,7 @@ import {
   fetchNFTGOCollectionInfo,
   fetchNFTGOFloorPrice,
 } from '../../services/nftgoFetcher';
+import { fetchBatchCollectionData } from './service';
 
 export async function getBatchCollections(
   request: FastifyRequest<{
@@ -13,34 +14,32 @@ export async function getBatchCollections(
   reply: FastifyReply
 ) {
   try {
-    const { collection_slugs } = request.body;
+    const { collection_slugs, contract_addresses } = request.body;
 
-    if (!collection_slugs || !Array.isArray(collection_slugs)) {
+    if (
+      !Array.isArray(collection_slugs) ||
+      !Array.isArray(contract_addresses)
+    ) {
       return reply.code(400).send({
-        error: 'Invalid request body. Expected { collection_slugs: string[] }.',
+        error: 'Both collection_slugs and contract_addresses must be arrays',
       });
     }
 
-    if (collection_slugs.length === 0) {
+    if (collection_slugs.length !== contract_addresses.length) {
       return reply.code(400).send({
-        error: 'collection_slugs array cannot be empty',
+        error:
+          'collection_slugs and contract_addresses must have the same length',
       });
     }
 
-    const MAX_SLUGS_PER_REQUEST = 100;
-    if (collection_slugs.length > MAX_SLUGS_PER_REQUEST) {
-      return reply.code(400).send({
-        error: `Too many slugs requested. Maximum allowed per request is ${MAX_SLUGS_PER_REQUEST}`,
-      });
-    }
-
-    const result = await getBatchCollectionDataFromCache(collection_slugs);
+    const result = await fetchBatchCollectionData(
+      collection_slugs,
+      contract_addresses
+    );
     return reply.send(result);
   } catch (error) {
-    request.log.error('Error in getBatchCollections controller:', error);
-    return reply.code(500).send({
-      error: 'Internal Server Error fetching batch collection data',
-    });
+    request.log.error('Error in getBatchCollections:', error);
+    return reply.code(500).send({ error: 'Internal server error' });
   }
 }
 
