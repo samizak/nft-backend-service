@@ -3,6 +3,7 @@ import axios, { AxiosError } from 'axios';
 import pLimit from 'p-limit';
 import redisClient from '../../lib/redis'; // Import Redis client
 import { addCollectionsToQueue } from '../../services/collectionFetcher'; // Import queue function
+import CollectionDataModel from '../../models/CollectionData'; // Import the model
 import {
   CollectionInfo,
   PriceData,
@@ -18,6 +19,7 @@ const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const FETCH_TIMEOUT_MS = 15000;
 const CACHE_PREFIX = 'collection:'; // Cache key prefix (must match worker)
+const CACHE_TTL_SECONDS = 60; // Added for the new hybrid cache/DB fetch function
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,89 +29,139 @@ export async function getBatchCollectionDataFromCache(
 ): Promise<BatchCollectionsResponse> {
   const results: { [collectionSlug: string]: CollectionResult } = {};
   const cacheKeys = collectionSlugs.map((slug) => `${CACHE_PREFIX}${slug}`);
-  const missingSlugs: string[] = [];
+  const slugsMissingFromCache: string[] = [];
+  const slugsToQueueForRefresh: string[] = [];
 
+  // 1. Check Redis Cache
   try {
-    console.log(
-      `[Cache] Attempting to fetch ${cacheKeys.length} slugs from cache.`
-    );
-    // Use mget to fetch all keys at once. Returns an array of strings or nulls.
+    console.log(`[API Cache] Checking cache for ${cacheKeys.length} slugs.`);
     const cachedData = await redisClient.mget(cacheKeys);
 
     cachedData.forEach((item, index) => {
       const slug = collectionSlugs[index];
       if (item) {
-        // Check if data exists for this key (not null)
+        // Cache Hit
         try {
-          // Attempt to parse the cached JSON string
           const parsedItem = JSON.parse(item);
-          // Basic validation of parsed structure (can be more robust)
-          if (
-            parsedItem &&
-            typeof parsedItem === 'object' &&
-            parsedItem.info !== undefined &&
-            parsedItem.price !== undefined
-          ) {
-            results[slug] = {
-              info: parsedItem.info, // Assign directly from cached object
-              price: parsedItem.price,
-              // Optionally include lastUpdated from cache?
-              // lastUpdated: parsedItem.lastUpdated
-            };
+          if (parsedItem && typeof parsedItem === 'object') {
+            results[slug] = { info: parsedItem.info, price: parsedItem.price };
+            // Optionally: check parsedItem.lastUpdated for staleness and queue low-priority refresh?
           } else {
+            // Invalid data in cache
             console.warn(
-              `[Cache] Invalid JSON structure in cache for ${slug}. Will queue for refresh.`
+              `[API Cache] Invalid cache structure for ${slug}. Will check DB.`
             );
-            results[slug] = {}; // Default empty object
-            missingSlugs.push(slug);
+            slugsMissingFromCache.push(slug);
           }
         } catch (parseError) {
-          console.error(
-            `[Cache] Failed to parse cached data for ${slug}:`,
-            parseError
-          );
-          results[slug] = {}; // Default empty object on parse error
-          missingSlugs.push(slug); // Treat parse error as a miss
+          console.error(`[API Cache] Parse error for ${slug}:`, parseError);
+          slugsMissingFromCache.push(slug); // Treat parse error as miss
         }
       } else {
-        // Cache miss
-        console.log(`[Cache] Miss for slug: ${slug}.`);
-        results[slug] = {}; // Default empty object for cache miss
-        missingSlugs.push(slug);
+        // Cache Miss
+        // console.log(`[API Cache] Miss for ${slug}.`); // Reduce noise maybe
+        slugsMissingFromCache.push(slug);
       }
     });
-
     console.log(
-      `[Cache] Found ${collectionSlugs.length - missingSlugs.length} slugs in cache. Missing ${missingSlugs.length}.`
+      `[API Cache] ${slugsMissingFromCache.length} misses out of ${collectionSlugs.length}.`
     );
-
-    // If there were cache misses, trigger background fetches for them
-    if (missingSlugs.length > 0) {
-      console.log(
-        `[Cache] Queuing ${missingSlugs.length} missing slugs for background fetch.`
-      );
-      // Don't await this, let it run in the background
-      addCollectionsToQueue(missingSlugs).catch((queueError) => {
-        console.error(
-          '[Cache] Failed to add missing slugs to queue:',
-          queueError
-        );
-      });
-    }
-  } catch (error) {
-    console.error('[Cache] Error fetching from Redis:', error);
-    // Handle Redis error: Return default empty objects for all requested slugs
-    collectionSlugs.forEach((slug) => {
-      if (!results[slug]) {
-        // Avoid overwriting if parsed partially before error
-        results[slug] = {};
-      }
-    });
-    // Optionally, still try to queue all slugs if Redis failed?
-    // Consider adding all slugs to queue if redis itself fails
-    // addCollectionsToQueue(collectionSlugs).catch(...);
+  } catch (redisError) {
+    console.error('[API Cache] Redis mget error:', redisError);
+    // If Redis fails, treat all requested slugs as potential misses from DB
+    slugsMissingFromCache.push(...collectionSlugs);
   }
 
+  // 2. Check MongoDB for Cache Misses
+  if (slugsMissingFromCache.length > 0) {
+    const slugsStillMissing: string[] = [];
+    try {
+      console.log(
+        `[API DB Check] Checking MongoDB for ${slugsMissingFromCache.length} slugs.`
+      );
+      const dbResults = await CollectionDataModel.find(
+        { slug: { $in: slugsMissingFromCache } }, // Find docs matching the missed slugs
+        { slug: 1, info: 1, price: 1, dataLastFetchedAt: 1 } // Select necessary fields
+      ).lean(); // Use .lean() for plain JS objects
+
+      const foundInDbMap = new Map<string, (typeof dbResults)[0]>();
+      dbResults.forEach((doc) => foundInDbMap.set(doc.slug, doc));
+
+      for (const slug of slugsMissingFromCache) {
+        const dbDoc = foundInDbMap.get(slug);
+        if (dbDoc) {
+          // MongoDB Hit
+          console.log(`[API DB Check] Hit for ${slug}.`);
+          results[slug] = {
+            info: dbDoc.info ?? undefined,
+            price: dbDoc.price ?? undefined,
+          };
+
+          // Add data to Redis cache asynchronously (warm cache)
+          const fetchedAt = dbDoc.dataLastFetchedAt || new Date(0); // Use stored fetch time or epoch
+          const dataToCache = {
+            info: dbDoc.info,
+            price: dbDoc.price,
+            lastUpdated: fetchedAt.toISOString(),
+            source: 'db-warm-cache', // Indicate source
+          };
+          redisClient
+            .set(
+              `${CACHE_PREFIX}${slug}`,
+              JSON.stringify(dataToCache),
+              'EX',
+              CACHE_TTL_SECONDS
+            )
+            .catch((err) =>
+              console.error(
+                `[API DB Check] Failed to warm cache for ${slug}:`,
+                err
+              )
+            );
+
+          // Optionally queue a low-priority refresh if DB data is old?
+          // For now, just warming cache is enough.
+        } else {
+          // MongoDB Miss
+          console.log(`[API DB Check] Miss for ${slug}.`);
+          results[slug] = {}; // Ensure placeholder exists
+          slugsStillMissing.push(slug);
+        }
+      }
+      console.log(
+        `[API DB Check] Found ${dbResults.length} in DB. Still missing ${slugsStillMissing.length}.`
+      );
+      // Slugs needing fetch from OpenSea are in slugsStillMissing
+      slugsToQueueForRefresh.push(...slugsStillMissing);
+    } catch (dbError) {
+      console.error('[API DB Check] MongoDB find error:', dbError);
+      // If DB lookup fails, treat all original cache misses as needing refresh
+      slugsToQueueForRefresh.push(...slugsMissingFromCache);
+      // Ensure placeholders exist for slugs we couldn't check in DB
+      slugsMissingFromCache.forEach((slug) => {
+        if (!results[slug]) results[slug] = {};
+      });
+    }
+  }
+
+  // 3. Queue Background Refresh for Final Misses
+  if (slugsToQueueForRefresh.length > 0) {
+    console.log(
+      `[API Queue] Queuing ${slugsToQueueForRefresh.length} slugs for background fetch.`
+    );
+    addCollectionsToQueue(slugsToQueueForRefresh).catch((queueError) => {
+      console.error(
+        '[API Queue] Failed to add missing slugs to queue:',
+        queueError
+      );
+    });
+  }
+
+  // 4. Return Combined Results
+  // Ensure all originally requested slugs have at least an empty placeholder
+  collectionSlugs.forEach((slug) => {
+    if (!results[slug]) results[slug] = {};
+  });
   return { data: results };
 }
 

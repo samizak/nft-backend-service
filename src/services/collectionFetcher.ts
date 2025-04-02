@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 
 import redisClient from '../lib/redis'; // Use our configured client
 import { CollectionInfo, PriceData } from '../api/collection/types';
+import CollectionDataModel from '../models/CollectionData'; // Import the new model
 
 dotenv.config();
 
@@ -175,20 +176,39 @@ const worker = new Worker<{ slug: string }>(
         return { info: infoResult.value, price: priceResult.value };
       });
 
-      // --- Cache Update ---
+      // --- Cache and DB Update ---
+      const fetchedAt = new Date(); // Timestamp for this fetch operation
       const cacheKey = `${CACHE_PREFIX}${slug}`;
-      // Store info and price separately? Or together? Storing together for simplicity now.
-      const cacheValue = JSON.stringify({
+      const dataToStore = {
         info: result.info,
         price: result.price,
-        lastUpdated: new Date().toISOString(), // Add timestamp
+        lastUpdated: fetchedAt.toISOString(), // Timestamp for cache freshness
         source: 'worker-cache', // Indicate source
-      });
+      };
+      const cacheValue = JSON.stringify(dataToStore);
 
-      // Set cache with TTL
+      // 1. Update Redis Cache (with TTL)
       await redisClient.set(cacheKey, cacheValue, 'EX', CACHE_TTL_SECONDS);
       console.log(
-        `[Worker] Successfully fetched and cached data for ${slug} (Job ${job.id}). Key: ${cacheKey}`
+        `[Worker] Updated Redis cache for ${slug} (Job ${job.id}). Key: ${cacheKey}`
+      );
+
+      // 2. Update MongoDB (Upsert: Update if exists, Insert if not)
+      await CollectionDataModel.updateOne(
+        { slug: slug }, // Find by slug
+        {
+          $set: {
+            // Set these fields
+            info: result.info,
+            price: result.price,
+            dataLastFetchedAt: fetchedAt, // Record when OS data was fetched
+          },
+          $setOnInsert: { slug: slug }, // Ensure slug is set on insert
+        },
+        { upsert: true } // Create document if it doesn't exist
+      );
+      console.log(
+        `[Worker] Upserted MongoDB data for ${slug} (Job ${job.id}).`
       );
     } catch (error: any) {
       console.error(
