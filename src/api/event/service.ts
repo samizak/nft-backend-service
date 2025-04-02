@@ -1,6 +1,6 @@
 import { RawOpenSeaApiResponse, RawOpenSeaEvent, ActivityEvent } from './types';
-import { getDb } from '../../lib/db';
-import { Collection, Document, WithId } from 'mongodb';
+import ActivityEventModel, { IActivityEvent } from '../../models/ActivityEvent';
+import mongoose from 'mongoose';
 import axios from 'axios';
 import dotenv from 'dotenv';
 
@@ -187,46 +187,45 @@ const mapRawEventToActivityEvent = (
   };
 };
 
-// --- NEW: Fetch Paginated Events from DB ---
+// --- NEW: Fetch Paginated Events from DB using Mongoose ---
 export const getPaginatedAccountEvents = async (
   address: string,
   skip: number,
   limit: number
-): Promise<WithId<ActivityEvent>[]> => {
+): Promise<IActivityEvent[]> => {
   try {
-    const db = getDb();
-    const collection = db.collection<ActivityEvent>('activityEvents');
     const lowerCaseAddress = address.toLowerCase();
-    const events = await collection
-      .find(
-        {
-          $or: [
-            { 'from_account.address': lowerCaseAddress },
-            { 'to_account.address': lowerCaseAddress },
-          ],
-        },
-        { sort: { created_date: -1 }, skip: skip, limit: limit }
-      )
-      .toArray();
-    return events;
+    // Use Mongoose Model to find events
+    const events = await ActivityEventModel.find({
+      $or: [
+        { 'from_account.address': lowerCaseAddress },
+        { 'to_account.address': lowerCaseAddress },
+      ],
+    })
+      .sort({ created_date: -1 }) // Sort by creation date descending
+      .skip(skip) // Apply pagination skip
+      .limit(limit) // Apply pagination limit
+      .lean(); // Use .lean() for plain JS objects if full Mongoose docs aren't needed downstream
+
+    // The model schema ensures lowercase comparison, but explicit lowercase here is safe.
+    return events as IActivityEvent[]; // Cast if using lean()
   } catch (error) {
     console.error(
-      `Database error fetching paginated events for ${address}:`,
+      `[Event Service] Mongoose error fetching paginated events for ${address}:`,
       error
     );
-    throw new Error('Failed to retrieve events from database.');
+    throw new Error('Failed to retrieve events from database.'); // Keep generic error
   }
 };
 
-// --- NEW: Get Total Event Count from DB ---
+// --- NEW: Get Total Event Count from DB using Mongoose ---
 export const getAccountEventCount = async (
   address: string
 ): Promise<number> => {
   try {
-    const db = getDb();
-    const collection = db.collection<ActivityEvent>('activityEvents');
     const lowerCaseAddress = address.toLowerCase();
-    const count = await collection.countDocuments({
+    // Use Mongoose Model to count documents
+    const count = await ActivityEventModel.countDocuments({
       $or: [
         { 'from_account.address': lowerCaseAddress },
         { 'to_account.address': lowerCaseAddress },
@@ -234,20 +233,24 @@ export const getAccountEventCount = async (
     });
     return count;
   } catch (error) {
-    console.error(`Database error counting events for ${address}:`, error);
+    console.error(
+      `[Event Service] Mongoose error counting events for ${address}:`,
+      error
+    );
     throw new Error('Failed to count events in database.');
   }
 };
 
-// --- NEW: Background Sync Function ---
+// --- NEW: Background Sync Function using Mongoose ---
 let isSyncing = new Set<string>(); // Basic in-memory lock
+
 export const syncAccountEventsInBackground = async (
   address: string,
   maxPages: number = MAX_PAGES_DEFAULT
 ): Promise<void> => {
   const startTime = Date.now();
   const lowerCaseAddress = address.toLowerCase();
-  console.log(`[Sync:${lowerCaseAddress}] Starting background sync...`);
+
   if (isSyncing.has(lowerCaseAddress)) {
     console.log(
       `[Sync:${lowerCaseAddress}] Sync already in progress. Skipping.`
@@ -255,172 +258,171 @@ export const syncAccountEventsInBackground = async (
     return;
   }
   isSyncing.add(lowerCaseAddress);
+  console.log(`[Sync:${lowerCaseAddress}] Starting background sync...`);
+
   try {
-    if (!OPENSEA_API_KEY) {
-      console.error(`[Sync:${lowerCaseAddress}] OpenSea API key is missing.`);
-      return;
-    }
-    const db = getDb();
-    const collection: Collection<ActivityEvent> =
-      db.collection('activityEvents');
-    let latestStoredTimestamp: number | null = null;
-    try {
-      const latestEvent = await collection.findOne(
-        {
-          $or: [
-            { 'from_account.address': lowerCaseAddress },
-            { 'to_account.address': lowerCaseAddress },
-          ],
-        },
-        { sort: { created_date: -1 } }
-      );
-      if (latestEvent?.created_date) {
-        latestStoredTimestamp = latestEvent.created_date;
-        console.log(
-          `[Sync:${lowerCaseAddress}] Found latest stored event timestamp: ${latestStoredTimestamp}`
-        );
-      } else {
-        console.log(
-          `[Sync:${lowerCaseAddress}] No existing events found, fetching history.`
-        );
-      }
-    } catch (dbError) {
-      console.error(
-        `[Sync:${lowerCaseAddress}] DB Error fetching latest event timestamp:`,
-        dbError
-      );
-    }
     let nextCursor: string | null = null;
-    let pageCount = 0;
-    let totalValidEventsFetched = 0;
-    const effectiveMaxPages = Math.max(1, maxPages);
-    while (
-      pageCount < effectiveMaxPages &&
-      (nextCursor !== null || pageCount === 0)
-    ) {
-      let attempt = 0;
-      let requestSuccessful = false;
-      let responseData: RawOpenSeaApiResponse | null = null;
-      while (attempt < MAX_RETRIES && !requestSuccessful) {
-        try {
-          console.log(
-            `[Sync:${lowerCaseAddress}] Fetching page ${pageCount + 1} (Attempt ${attempt + 1})...`
-          );
-          const url = new URL(
-            OPENSEA_API_BASE_URL + `/events/accounts/` + address
-          );
-          url.searchParams.append('chain', OPENSEA_CHAIN);
-          OPENSEA_EVENT_TYPES.forEach((type) =>
-            url.searchParams.append('event_type', type)
-          );
-          url.searchParams.append('limit', OPENSEA_LIMIT.toString());
-          if (nextCursor) {
-            url.searchParams.append('next', nextCursor);
-          } else if (latestStoredTimestamp !== null) {
-            url.searchParams.append('after', String(latestStoredTimestamp));
-            console.log(
-              `[Sync:${lowerCaseAddress}] Applying 'after' filter: ${latestStoredTimestamp}`
-            );
-          }
-          const response = await axios.get<RawOpenSeaApiResponse>(
-            url.toString(),
-            {
-              headers: {
-                accept: 'application/json',
-                'X-API-KEY': OPENSEA_API_KEY,
-              },
-              timeout: 40000,
-            }
-          );
-          responseData = response.data;
-          requestSuccessful = true;
-        } catch (error) {
-          attempt++;
-          const isAxiosError = axios.isAxiosError(error);
-          const statusCode = isAxiosError ? error.response?.status : null;
-          const shouldRetry =
-            (statusCode === 429 ||
-              (statusCode && statusCode >= 500 && statusCode < 600)) &&
-            attempt < MAX_RETRIES;
-          if (shouldRetry) {
-            console.warn(
-              `[Sync:${lowerCaseAddress}] OpenSea API Error (${statusCode || 'Unknown'}). Retry attempt ${attempt}/${MAX_RETRIES} after ${RETRY_DELAY / 1000}s...`
-            );
-            await sleep(RETRY_DELAY);
-          } else {
-            console.error(
-              `[Sync:${lowerCaseAddress}] Failed to fetch page ${pageCount + 1} after ${attempt} attempts. Error:`,
-              isAxiosError ? error.message : error
-            );
-            break;
-          }
-        }
-      }
-      if (!requestSuccessful || !responseData) {
-        console.error(
-          `[Sync:${lowerCaseAddress}] Could not fetch data for page ${pageCount + 1} after ${MAX_RETRIES} attempts. Stopping sync.`
-        );
-        break;
-      }
-      const rawEvents = responseData.asset_events || [];
-      if (rawEvents.length === 0 && !responseData.next) {
-        console.log(
-          `[Sync:${lowerCaseAddress}] No more raw events found on page ${pageCount + 1}. Ending fetch loop.`
-        );
-        nextCursor = null;
-      }
-      const mappedEvents = rawEvents.map(mapRawEventToActivityEvent);
-      const validEvents: ActivityEvent[] = mappedEvents.filter(
-        (event): event is ActivityEvent => event !== null
+    let pagesFetched = 0;
+    let totalEventsProcessed = 0;
+    let rateLimitRetryCount = 0;
+    let keepFetching = true;
+
+    // Get the timestamp of the most recent event stored for this account
+    const latestEvent = await ActivityEventModel.findOne({
+      $or: [
+        { 'from_account.address': lowerCaseAddress },
+        { 'to_account.address': lowerCaseAddress },
+      ],
+    })
+      .sort({ created_date: -1 })
+      .select({ created_date: 1 })
+      .lean();
+
+    const occurredAfter = latestEvent ? latestEvent.created_date : null;
+    if (occurredAfter) {
+      console.log(
+        `[Sync:${lowerCaseAddress}] Found latest event at timestamp ${occurredAfter}. Fetching events after this time.`
       );
-      if (validEvents.length > 0) {
-        validEvents.sort((a, b) => b.created_date - a.created_date); // Sort newest first
-        totalValidEventsFetched += validEvents.length;
-        console.log(
-          `[Sync:${lowerCaseAddress}] Page ${pageCount + 1}: Mapped ${validEvents.length} valid events.`
+    }
+
+    while (keepFetching && pagesFetched < maxPages) {
+      pagesFetched++;
+      console.log(
+        `[Sync:${lowerCaseAddress}] Fetching page ${pagesFetched} ${nextCursor ? 'with cursor ' + nextCursor : ''}`
+      );
+
+      try {
+        const url = new URL(
+          `${OPENSEA_API_BASE_URL}/events/accounts/${lowerCaseAddress}`
         );
-        try {
-          const insertResult = await collection.insertMany(validEvents, {
-            ordered: false,
-          });
+        OPENSEA_EVENT_TYPES.forEach((type) =>
+          url.searchParams.append('event_type', type)
+        );
+        url.searchParams.append('limit', String(OPENSEA_LIMIT));
+        if (nextCursor) {
+          url.searchParams.append('next', nextCursor);
+        }
+        if (occurredAfter) {
+          // OpenSea API uses seconds for timestamp filtering
+          url.searchParams.append('occurred_after', String(occurredAfter));
+        }
+
+        const response = await axios.get<RawOpenSeaApiResponse>(
+          url.toString(),
+          {
+            headers: {
+              accept: 'application/json',
+              'x-api-key': OPENSEA_API_KEY,
+            },
+            timeout: 15000,
+          }
+        );
+
+        const rawEvents = response.data.asset_events || [];
+        nextCursor = response.data.next || null;
+        rateLimitRetryCount = 0; // Reset retries on successful fetch
+
+        if (rawEvents.length === 0) {
           console.log(
-            `[Sync:${lowerCaseAddress}] Inserted ${insertResult.insertedCount} new events into DB (Page ${pageCount + 1}).`
+            `[Sync:${lowerCaseAddress}] Page ${pagesFetched}: No more events returned by API.`
           );
-        } catch (dbError: any) {
-          if (dbError.code === 11000) {
-            const we = dbError.writeErrors?.length || 'some';
-            const ic = dbError.result?.nInserted || 0;
-            console.warn(
-              `[Sync:${lowerCaseAddress}] DB Warning: Attempted insert ${we} duplicates (Page ${pageCount + 1}). ${ic} new events inserted.`
+          keepFetching = false;
+        } else {
+          console.log(
+            `[Sync:${lowerCaseAddress}] Page ${pagesFetched}: Received ${rawEvents.length} raw events.`
+          );
+
+          // Map and filter events
+          const mappedEvents = rawEvents
+            .map(mapRawEventToActivityEvent)
+            .filter((e) => e !== null) as ActivityEvent[];
+          console.log(
+            `[Sync:${lowerCaseAddress}] Page ${pagesFetched}: Mapped to ${mappedEvents.length} valid activity events.`
+          );
+
+          totalEventsProcessed += mappedEvents.length;
+
+          // Use Mongoose bulkWrite for efficient upsert
+          if (mappedEvents.length > 0) {
+            const bulkOps = mappedEvents.map((event) => ({
+              updateOne: {
+                filter: {
+                  transaction: event.transaction,
+                  event_type: event.event_type,
+                  'nft.identifier': event.nft.identifier,
+                }, // Use a reliable unique key combo
+                update: { $set: event },
+                upsert: true,
+              },
+            }));
+
+            console.log(
+              `[Sync:${lowerCaseAddress}] Attempting bulkWrite with ${bulkOps.length} operations...`
             );
-          } else {
-            console.error(
-              `[Sync:${lowerCaseAddress}] DB Error inserting events (Page ${pageCount + 1}):`,
-              dbError
+            const bulkResult = await ActivityEventModel.bulkWrite(
+              bulkOps as any[],
+              { ordered: false }
+            ); // Cast needed sometimes, unordered is faster
+            console.log(
+              `[Sync:${lowerCaseAddress}] BulkWrite complete. Upserted: ${bulkResult.upsertedCount}, Matched: ${bulkResult.matchedCount}, Modified: ${bulkResult.modifiedCount}`
             );
           }
         }
-      } else {
-        console.log(
-          `[Sync:${lowerCaseAddress}] Page ${pageCount + 1}: No valid events to insert.`
-        );
-      }
-      nextCursor = responseData.next || null;
-      pageCount++;
-      if (!nextCursor) {
-        console.log(
-          `[Sync:${lowerCaseAddress}] No 'next' cursor provided. Ending sync.`
-        );
-      } else if (pageCount < effectiveMaxPages) {
-        await sleep(INTER_PAGE_DELAY);
+
+        // Stop if no next cursor
+        if (!nextCursor) {
+          console.log(
+            `[Sync:${lowerCaseAddress}] No next cursor provided by API. Ending fetch.`
+          );
+          keepFetching = false;
+        }
+
+        // Add delay between pages if continuing
+        if (keepFetching) {
+          await sleep(INTER_PAGE_DELAY);
+        }
+      } catch (error) {
+        if (axios.isAxiosError(error)) {
+          const status = error.response?.status;
+          if (status === 429 || status === 503 || status === 504) {
+            // Rate limit or server unavailable
+            rateLimitRetryCount++;
+            if (rateLimitRetryCount <= MAX_RETRIES) {
+              const delay = RETRY_DELAY * Math.pow(2, rateLimitRetryCount - 1); // Exponential backoff
+              console.warn(
+                `[Sync:${lowerCaseAddress}] Rate limited or server error (Status ${status}). Retrying attempt ${rateLimitRetryCount}/${MAX_RETRIES} after ${delay}ms...`
+              );
+              await sleep(delay);
+              pagesFetched--; // Decrement to retry the same page
+            } else {
+              console.error(
+                `[Sync:${lowerCaseAddress}] Max retries (${MAX_RETRIES}) exceeded for rate limit/server error. Stopping sync.`
+              );
+              keepFetching = false;
+            }
+          } else {
+            console.error(
+              `[Sync:${lowerCaseAddress}] Axios error fetching page ${pagesFetched}: Status ${status || 'N/A'} - ${error.message}`
+            );
+            keepFetching = false; // Stop on other errors
+          }
+        } else {
+          console.error(
+            `[Sync:${lowerCaseAddress}] Non-Axios error fetching page ${pagesFetched}:`,
+            error
+          );
+          keepFetching = false; // Stop on unexpected errors
+        }
       }
     }
+
+    const duration = (Date.now() - startTime) / 1000;
     console.log(
-      `[Sync:${lowerCaseAddress}] Sync finished. Fetched ${pageCount} pages, ${totalValidEventsFetched} valid events. Duration: ${Date.now() - startTime}ms`
+      `[Sync:${lowerCaseAddress}] Sync finished in ${duration.toFixed(2)}s. Fetched ${pagesFetched} pages, Processed approx ${totalEventsProcessed} new/updated events.`
     );
   } catch (error) {
     console.error(
-      `[Sync:${lowerCaseAddress}] Unexpected error during sync:`,
+      `[Sync:${lowerCaseAddress}] Unhandled error during sync process:`,
       error
     );
   } finally {
