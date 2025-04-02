@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import { env } from 'process';
+import redisClient from '../../lib/redis'; // Import Redis client
 
 interface OpenSeaNft {
   identifier: string;
@@ -23,6 +24,8 @@ interface FetchNftResult {
 }
 
 const OPENSEA_PAGE_LIMIT = 200;
+const NFT_CACHE_PREFIX = 'nft_page:'; // Prefix for NFT page cache keys
+const NFT_CACHE_TTL_SECONDS = 5 * 60; // Cache for 5 minutes
 
 export const getNftsByAccount = async (
   address: string,
@@ -30,12 +33,50 @@ export const getNftsByAccount = async (
 ): Promise<FetchNftResult> => {
   const apiKey = env.OPENSEA_API_KEY;
   if (!apiKey) {
-    console.error('OPENSEA_API_KEY is not set in environment variables.');
+    console.error('[NFT Service] OPENSEA_API_KEY is not set.');
     throw new Error('Server configuration error: Missing OpenSea API key.');
   }
 
+  // Generate cache key: Use 'first' if cursor is null/empty
+  const cursorKeyPart = nextCursor || 'first';
+  const cacheKey = `${NFT_CACHE_PREFIX}${address.toLowerCase()}:${cursorKeyPart}`;
+
+  // 1. Check Cache
+  try {
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[NFT Cache] HIT for key: ${cacheKey}`);
+      try {
+        const parsedData: FetchNftResult = JSON.parse(cachedData);
+        // Basic validation
+        if (parsedData && Array.isArray(parsedData.nfts)) {
+          return parsedData;
+        } else {
+          console.warn(
+            `[NFT Cache] Invalid data structure in cache for key ${cacheKey}. Fetching fresh data.`
+          );
+          // Proceed to fetch if cache data is invalid
+        }
+      } catch (parseError) {
+        console.error(
+          `[NFT Cache] Failed to parse cached data for key ${cacheKey}:`,
+          parseError
+        );
+        // Proceed to fetch if cache data is corrupted
+      }
+    }
+    console.log(`[NFT Cache] MISS for key: ${cacheKey}`);
+  } catch (redisError) {
+    console.error(
+      `[NFT Cache] Redis GET error for key ${cacheKey}:`,
+      redisError
+    );
+    // Proceed to fetch if Redis is unavailable, don't fail the request
+  }
+
+  // 2. Cache Miss or Redis Error: Fetch from OpenSea
   console.log(
-    `[NFT Fetch] Fetching page for address: ${address}${nextCursor ? ', Cursor: ' + nextCursor : ''}`
+    `[NFT Fetch] Fetching from OpenSea for address: ${address}${nextCursor ? ', Cursor: ' + nextCursor : ' (first page)'}`
   );
 
   try {
@@ -52,22 +93,40 @@ export const getNftsByAccount = async (
         accept: 'application/json',
         'x-api-key': apiKey,
       },
-      timeout: 20000,
+      timeout: 20000, // 20 seconds timeout
     });
 
     const data = response.data;
     const fetchedNfts = data.nfts || [];
     const next = data.next || null;
 
-    console.log(
-      `[NFT Fetch] Fetched ${fetchedNfts.length} NFTs for ${address}${nextCursor ? ' (cursor: ' + nextCursor + ')' : ' (first page)'}. Next cursor: ${next}`
-    );
-
-    return {
+    const result: FetchNftResult = {
       nfts: fetchedNfts,
       nextCursor: next,
     };
+
+    console.log(
+      `[NFT Fetch] Fetched ${result.nfts.length} NFTs for ${address}. Next cursor: ${result.nextCursor}`
+    );
+
+    // 3. Store successful fetch in Cache (don't await, fire and forget)
+    redisClient
+      .set(cacheKey, JSON.stringify(result), 'EX', NFT_CACHE_TTL_SECONDS)
+      .then(() => {
+        console.log(
+          `[NFT Cache] SET successful for key: ${cacheKey} with TTL ${NFT_CACHE_TTL_SECONDS}s`
+        );
+      })
+      .catch((cacheSetError) => {
+        console.error(
+          `[NFT Cache] Failed to SET cache for key ${cacheKey}:`,
+          cacheSetError
+        );
+      });
+
+    return result; // Return fetched data
   } catch (error) {
+    // Error handling logic remains the same
     if (axios.isAxiosError(error)) {
       const axiosError = error as AxiosError;
       if (axiosError.response) {
