@@ -25,7 +25,7 @@ const QUEUE_NAME = 'portfolio-calculator-queue';
 const CACHE_PREFIX = 'portfolio:summary:';
 const CACHE_TTL_SECONDS = 60 * 60 * 4; // Cache portfolio summary for 4 hours (changed from 15 min)
 
-const MAX_CONCURRENT_COLLECTION_FETCH = 10; // Concurrency for fetching collection data
+const MAX_CONCURRENT_COLLECTION_FETCH = 3; // Reduced concurrency from 10
 const MAX_RETRIES_PER_JOB = 2; // Retries for the portfolio calculation job itself
 const INITIAL_RETRY_DELAY_MS = 60 * 1000; // Retry job after 1 minute
 
@@ -206,6 +206,7 @@ const worker = new Worker<PortfolioJobData>(
             nftCount: nftCount,
             floorPriceEth: floorPriceEth,
             totalValueEth: collectionValueEth,
+            safelistStatus: collectionData.safelist_status ?? null,
           };
           if (ethPriceUsd && floorPriceEth > 0) {
             breakdownItem.floorPriceUsd = floorPriceEth * ethPriceUsd;
