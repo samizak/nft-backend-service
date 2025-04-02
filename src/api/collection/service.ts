@@ -1,16 +1,10 @@
-import { env } from 'process';
-import axios from 'axios'; // Keep if used by any remaining logic
 import pLimit from 'p-limit';
 import redisClient from '../../lib/redis'; // Import Redis client
-import {
-  CollectionResult, // This type might become obsolete here
-  BatchCollectionsResponse,
-} from './types';
+import { BatchCollectionsResponse } from './types';
 
 // Import the new utility function and its return type
 import {
   fetchCollectionData as fetchCollectionDataUtil,
-  CombinedCollectionData,
   BasicCollectionInfo,
 } from '../../utils/collectionApi';
 
