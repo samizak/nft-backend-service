@@ -3,8 +3,7 @@ import { getNftsByAccount } from './service';
 
 interface GetNftsByAccountQuery {
   address: string;
-  next?: string;
-  maxPages?: string;
+  cursor?: string;
 }
 
 export const getNftsByAccountSchema = {
@@ -13,10 +12,8 @@ export const getNftsByAccountSchema = {
     properties: {
       address: {
         type: 'string',
-        pattern: '^0x[a-fA-F0-9]{40}$',
       },
-      next: { type: 'string' },
-      maxPages: { type: 'string', pattern: '^[1-9]\\d*$' },
+      cursor: { type: 'string' },
     },
     required: ['address'],
   },
@@ -26,12 +23,10 @@ export const getNftsByAccountHandler = async (
   request: FastifyRequest<{ Querystring: GetNftsByAccountQuery }>,
   reply: FastifyReply
 ) => {
-  const { address, next, maxPages: maxPagesStr } = request.query;
-
-  const maxPages = maxPagesStr ? parseInt(maxPagesStr, 10) : undefined;
+  const { address, cursor } = request.query;
 
   try {
-    const result = await getNftsByAccount(address, next || null, maxPages);
+    const result = await getNftsByAccount(address, cursor || null);
     reply.code(200).send(result);
   } catch (error) {
     request.log.error(
@@ -46,12 +41,10 @@ export const getNftsByAccountHandler = async (
           .send({ error: 'Internal server configuration error.' });
       }
       if (error.message.startsWith('Invalid request for address')) {
-        return reply
-          .code(400)
-          .send({
-            error: 'Bad Request: Invalid address format or related issue.',
-            details: error.message,
-          });
+        return reply.code(400).send({
+          error: 'Bad Request: Invalid address format or related issue.',
+          details: error.message,
+        });
       }
       if (
         error.message.includes('Failed to fetch NFTs from OpenSea: Status 429')
@@ -62,10 +55,8 @@ export const getNftsByAccountHandler = async (
       }
     }
 
-    reply
-      .code(500)
-      .send({
-        error: 'An internal server error occurred while fetching NFTs.',
-      });
+    reply.code(500).send({
+      error: 'An internal server error occurred while fetching NFTs.',
+    });
   }
 };

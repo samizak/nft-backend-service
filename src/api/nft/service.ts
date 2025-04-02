@@ -19,13 +19,14 @@ interface OpenSeaNftResponse {
 
 interface FetchNftResult {
   nfts: OpenSeaNft[];
-  pagesFetched: number;
+  nextCursor: string | null;
 }
 
 const OPENSEA_PAGE_LIMIT = 200;
 
 export const getNftsByAccount = async (
-  address: string
+  address: string,
+  nextCursor: string | null = null
 ): Promise<FetchNftResult> => {
   const apiKey = env.OPENSEA_API_KEY;
   if (!apiKey) {
@@ -33,58 +34,38 @@ export const getNftsByAccount = async (
     throw new Error('Server configuration error: Missing OpenSea API key.');
   }
 
-  let allNfts: OpenSeaNft[] = [];
-  let currentNext: string | null = null;
-  let pageCount = 0;
-  let hasMore = true;
-
   console.log(
-    `[NFT Fetch] Starting fetch for all NFTs for address: ${address}`
+    `[NFT Fetch] Fetching page for address: ${address}${nextCursor ? ', Cursor: ' + nextCursor : ''}`
   );
 
   try {
-    do {
-      pageCount++;
-      const url = new URL(
-        `https://api.opensea.io/api/v2/chain/ethereum/account/${address}/nfts`
-      );
-      url.searchParams.append('limit', OPENSEA_PAGE_LIMIT.toString());
-      if (currentNext) {
-        url.searchParams.append('next', currentNext);
-        console.log(
-          `[NFT Fetch] Requesting page ${pageCount} with cursor: ${currentNext}`
-        );
-      } else {
-        console.log(`[NFT Fetch] Requesting page ${pageCount} (first page)`);
-      }
+    const url = new URL(
+      `https://api.opensea.io/api/v2/chain/ethereum/account/${address}/nfts`
+    );
+    url.searchParams.append('limit', OPENSEA_PAGE_LIMIT.toString());
+    if (nextCursor) {
+      url.searchParams.append('next', nextCursor);
+    }
 
-      const response = await axios.get<OpenSeaNftResponse>(url.toString(), {
-        headers: {
-          accept: 'application/json',
-          'x-api-key': apiKey,
-        },
-        timeout: 20000,
-      });
+    const response = await axios.get<OpenSeaNftResponse>(url.toString(), {
+      headers: {
+        accept: 'application/json',
+        'x-api-key': apiKey,
+      },
+      timeout: 20000,
+    });
 
-      const data = response.data;
-      if (data.nfts?.length) {
-        allNfts = [...allNfts, ...data.nfts];
-        console.log(
-          `[NFT Fetch] Fetched ${data.nfts.length} NFTs on page ${pageCount}. Total so far: ${allNfts.length}`
-        );
-      }
-
-      currentNext = data.next || null;
-      hasMore = !!currentNext;
-    } while (hasMore);
+    const data = response.data;
+    const fetchedNfts = data.nfts || [];
+    const next = data.next || null;
 
     console.log(
-      `[NFT Fetch] Completed fetch for ${address}. Total NFTs: ${allNfts.length}, Pages Fetched: ${pageCount}`
+      `[NFT Fetch] Fetched ${fetchedNfts.length} NFTs for ${address}${nextCursor ? ' (cursor: ' + nextCursor + ')' : ' (first page)'}. Next cursor: ${next}`
     );
 
     return {
-      nfts: allNfts,
-      pagesFetched: pageCount,
+      nfts: fetchedNfts,
+      nextCursor: next,
     };
   } catch (error) {
     if (axios.isAxiosError(error)) {
@@ -92,21 +73,22 @@ export const getNftsByAccount = async (
       if (axiosError.response) {
         const status = axiosError.response.status;
         const errorData = axiosError.response.data;
+        const logSuffix = nextCursor ? ` (cursor: ${nextCursor})` : '';
         if (status === 400) {
           console.error(
-            `[NFT Fetch Error] OpenSea API Error (Bad Request): Status ${status}, Addr: ${address}, Data: ${JSON.stringify(errorData)}`
+            `[NFT Fetch Error] OpenSea API Error (Bad Request): Status ${status}, Addr: ${address}${logSuffix}, Data: ${JSON.stringify(errorData)}`
           );
           throw new Error(
             `Invalid request for address ${address}: ${JSON.stringify(errorData)}`
           );
         }
         console.error(
-          `[NFT Fetch Error] OpenSea API Error: Status ${status}, Addr: ${address}, Data: ${JSON.stringify(errorData)}`
+          `[NFT Fetch Error] OpenSea API Error: Status ${status}, Addr: ${address}${logSuffix}, Data: ${JSON.stringify(errorData)}`
         );
         throw new Error(`Failed to fetch NFTs from OpenSea: Status ${status}`);
       } else if (axiosError.request) {
         console.error(
-          `[NFT Fetch Error] OpenSea API Error: No response received. Addr: ${address}`,
+          `[NFT Fetch Error] OpenSea API Error: No response received. Addr: ${address}${nextCursor ? ', Cursor: ' + nextCursor : ''}`,
           axiosError.code
         );
         throw new Error(
@@ -115,7 +97,7 @@ export const getNftsByAccount = async (
       }
     }
     console.error(
-      `[NFT Fetch Error] Error fetching NFTs for address ${address}:`,
+      `[NFT Fetch Error] Error fetching NFTs page for address ${address}${nextCursor ? ', Cursor: ' + nextCursor : ''}:`,
       error
     );
     throw new Error('An unexpected error occurred while fetching NFTs.');
