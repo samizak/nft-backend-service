@@ -5,6 +5,7 @@ import fastify from 'fastify';
 import cors from '@fastify/cors';
 import { FastifySSEPlugin } from 'fastify-sse-v2';
 import mongoose from 'mongoose';
+import qs from 'qs';
 
 import ensRoutes from './api/ens/routes';
 import userRoutes from './api/user/routes';
@@ -43,8 +44,7 @@ mongoose.connection.on('reconnected', () => {
 
 const server = fastify({
   logger: true,
-  querystringParser: (str) =>
-    require('qs').parse(str, { parameterLimit: 5000 }),
+  querystringParser: (str) => qs.parse(str, { parameterLimit: 5000 }),
 });
 
 // --- Register Shared Schemas BEFORE routes ---
