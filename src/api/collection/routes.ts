@@ -16,28 +16,21 @@ async function collectionRoutes(
       schema: {
         body: {
           type: 'object',
-          required: ['collections'],
+          required: ['collection_slugs', 'contract_addresses'],
           properties: {
-            collections: {
+            collection_slugs: {
               type: 'array',
-              description: 'Array of collection identifiers',
+              items: { type: 'string' },
               minItems: 1,
               maxItems: 50,
-              items: {
-                type: 'object',
-                properties: {
-                  slug: {
-                    type: 'string',
-                    description:
-                      'OpenSea collection slug (required if contract missing)',
-                  },
-                  contract: {
-                    type: 'string',
-                    description:
-                      'Collection contract address (required if slug missing)',
-                  },
-                },
-              },
+              description: 'Array of OpenSea collection slugs',
+            },
+            contract_addresses: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+              maxItems: 50,
+              description: 'Array of corresponding contract addresses',
             },
           },
         },

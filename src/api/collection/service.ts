@@ -198,5 +198,6 @@ export async function fetchBatchCollectionData(
     `[API Service] Returning results for slugs: ${Object.keys(results).join(', ')}`
   );
 
+  // Revert: Keep the original return structure matching BatchCollectionsResponse type
   return { data: results };
 }

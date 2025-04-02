@@ -113,6 +113,16 @@ export async function fetchSingleCollectionInfo(
       });
 
       const collectionData = response.data;
+
+      // *** Add Log Here to Inspect Raw OpenSea Response ***
+      console.log(
+        `[Util Fetch Info API Raw Data - ${slug}] Safelist Status Field:`,
+        collectionData?.safelist_status
+      );
+      // You could also log the entire collectionData if needed for more debugging:
+      // console.log(`[Util Fetch Info API Raw Data - ${slug}] Full Response:`, JSON.stringify(collectionData));
+      // ****************************************************
+
       if (!collectionData) {
         console.warn(
           `[Util Fetch Info API] No collection data object in response for slug: ${slug}`
@@ -126,7 +136,7 @@ export async function fetchSingleCollectionInfo(
         name: collectionData.name ?? null,
         description: collectionData.description ?? null,
         image_url: collectionData.image_url ?? null,
-        safelist_status: collectionData.safelist_request_status ?? null,
+        safelist_status: collectionData.safelist_status ?? null,
         total_supply:
           collectionData.total_supply ??
           collectionData.stats?.total_supply ??

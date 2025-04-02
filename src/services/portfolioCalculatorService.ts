@@ -294,6 +294,11 @@ const worker = new Worker<PortfolioJobData>(
         totalNftCount += nftCount;
 
         if (collectionData) {
+          console.log(
+            `[Portfolio Worker] collectionData ${collectionData}:`,
+            collectionData
+          );
+
           const breakdownItem: PortfolioCollectionBreakdown = {
             slug: slug,
             contractAddress: colInfo.contractAddress,

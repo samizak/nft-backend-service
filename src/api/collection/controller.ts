@@ -39,12 +39,14 @@ export async function getBatchCollections(
     //    }
     // }
 
+    // Call the service function
     const result = await fetchBatchCollectionData(
       collection_slugs,
       contract_addresses
     );
-    // Wrap result in data object as before
-    return reply.send({ data: result });
+
+    // The service already returns { data: {...} }, so return it directly
+    return reply.send(result); // Corrected: Don't wrap in another { data: ... }
   } catch (error) {
     request.log.error('Error in getBatchCollections:', error);
     return reply.code(500).send({ error: 'Internal server error' });
