@@ -1,9 +1,17 @@
-import { FastifyInstance, FastifyPluginAsync } from 'fastify';
-import { getBatchCollections } from './controller';
+import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import {
+  getBatchCollections,
+  getNFTGOCollectionInfoHandler,
+  getNFTGOCollectionInfoSchema,
+  getNFTGOFloorPriceHandler,
+  getNFTGOFloorPriceSchema,
+} from './controller';
 
-const collectionRoutes: FastifyPluginAsync = async (
-  fastify: FastifyInstance
-) => {
+async function collectionRoutes(
+  fastify: FastifyInstance,
+  options: FastifyPluginOptions
+) {
+  // POST /collection/batch-collections
   fastify.post(
     '/batch-collections',
     {
@@ -36,6 +44,24 @@ const collectionRoutes: FastifyPluginAsync = async (
     },
     getBatchCollections
   );
-};
+
+  // POST /collection/nftgo-info
+  fastify.post(
+    '/nftgo-info',
+    {
+      schema: getNFTGOCollectionInfoSchema,
+    },
+    getNFTGOCollectionInfoHandler
+  );
+
+  // GET /collection/nftgo-floor-price/:contract_address
+  fastify.get(
+    '/nftgo-floor-price/:contract_address',
+    {
+      schema: getNFTGOFloorPriceSchema,
+    },
+    getNFTGOFloorPriceHandler
+  );
+}
 
 export default collectionRoutes;
