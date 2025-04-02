@@ -26,6 +26,7 @@ export default tseslint.config(
     rules: {
       // Your custom rules (equivalent to rules in .eslintrc.js)
       "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-explicit-any": "off",
       // Add any other specific rules you had or want here
       // Example: "no-console": "warn", 
     },
