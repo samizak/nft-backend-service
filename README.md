@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-This backend service provides APIs for tracking NFT portfolio values, fetching market data (ETH price, gas), retrieving NFT/collection information, and managing user activity events related to NFT transactions. It aggregates data from multiple sources like OpenSea, Alchemy, CoinGecko, and Infura, handles background processing for computationally intensive tasks, and implements caching strategies for improved performance and reduced reliance on external APIs.
+This backend service provides APIs for tracking NFT portfolio values, fetching market data (ETH price, gas), retrieving NFT/collection information, and managing user activity events related to NFT transactions. It aggregates data from multiple sources like OpenSea, Alchemy, CoinGecko, and Infura, handles background processing for computationally intensive tasks, and implements caching strategies for improved performance and reduced reliance on external APIs. This service powers the frontend application available at [https://github.com/samizak/nftportfolio.app](https://github.com/samizak/nftportfolio.app).
 
 ## 2. Technology Stack
 
