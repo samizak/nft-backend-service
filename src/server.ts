@@ -4,6 +4,7 @@ dotenv.config();
 import fastify from 'fastify';
 import cors from '@fastify/cors';
 import { FastifySSEPlugin } from 'fastify-sse-v2';
+import mongoose from 'mongoose';
 
 import ensRoutes from './api/ens/routes';
 import userRoutes from './api/user/routes';
@@ -15,8 +16,27 @@ import { env } from 'process';
 
 import { startPriceFetcher } from './services/priceFetcher';
 import { startGasFetcher } from './services/gasFetcher';
-import { connectToDatabase, disconnectFromDatabase } from './lib/db';
 import './services/collectionFetcher';
+
+// --- Mongoose Connection Event Listeners ---
+mongoose.connection.on('connected', () => {
+  console.log('[Mongoose] Connection established successfully.');
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('[Mongoose] Connection error:', err);
+  // Consider exiting if DB connection is critical and fails after initial connect
+  // process.exit(1);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('[Mongoose] Connection disconnected.');
+});
+
+mongoose.connection.on('reconnected', () => {
+  console.log('[Mongoose] Connection reconnected.');
+});
+// --- End Mongoose Listeners ---
 
 const server = fastify({
   logger: true,
@@ -42,19 +62,32 @@ server.get('/', (request, reply) => {
 });
 
 async function startServer() {
+  const MONGODB_URI = env.MONGODB_URI;
+  if (!MONGODB_URI) {
+    console.error('[Server] FATAL ERROR: MONGODB_URI is not defined.');
+    process.exit(1);
+  }
+
   try {
-    // Start background services
+    console.log('[Server] Attempting to connect to MongoDB via Mongoose...');
+    // Connect Mongoose BEFORE starting the server listener
+    await mongoose.connect(MONGODB_URI, {
+      // Add recommended options based on your Mongoose version
+      // e.g., useNewUrlParser: true, useUnifiedTopology: true
+      serverSelectionTimeoutMS: 30000, // Increase timeout slightly if needed
+    });
+    // The 'connected' listener above will log success
+
+    // Start background services that might rely on DB connection AFTER connecting
     startPriceFetcher();
     startGasFetcher();
+    // If collectionFetcher needs DB, ensure it starts/connects after Mongoose is ready
 
+    // Start listening for requests
     await server.listen({ port: Number(env.PORT) || 8080, host: '0.0.0.0' });
-
-    // Connect to Database *after* other initializations
-    await connectToDatabase();
-
-    // Start background services *after* successful server start and DB connection
   } catch (err) {
-    server.log.error(err);
+    console.error('[Server] Startup error:', err);
+    // Mongoose listener 'error' will also log specific DB connection errors
     process.exit(1);
   }
 }
@@ -66,15 +99,18 @@ signals.forEach((signal) => {
     console.log(`\nReceived ${signal}. Shutting down gracefully...`);
     try {
       // Stop background services first (if applicable)
-      // await stopPriceFetcher(); // Assuming stop functions exist
+      // await stopPriceFetcher();
       // await stopGasFetcher();
 
-      await disconnectFromDatabase(); // Disconnect DB
+      // Disconnect Mongoose
+      await mongoose.disconnect();
+      console.log('[Mongoose] Disconnected.');
+
       await server.close(); // Close Fastify server
-      console.log('Server shut down successfully.');
+      console.log('[Server] Server shut down successfully.');
       process.exit(0);
     } catch (err) {
-      console.error('Error during graceful shutdown:', err);
+      console.error('[Server] Error during graceful shutdown:', err);
       process.exit(1);
     }
   });
