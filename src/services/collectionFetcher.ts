@@ -23,6 +23,21 @@ const MAX_RETRIES_PER_FETCH = 3; // Max retries for the worker fetch attempts
 const INITIAL_RETRY_DELAY_MS = 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
+// Define a simpler type for the data returned by fetchSingleCollectionInfo
+interface BasicCollectionInfo {
+  slug: string;
+  name: string | null;
+  description: string | null;
+  image_url: string | null;
+  safelist_status: string | null;
+  stats: {
+    total_supply: number;
+    num_owners: number;
+    total_volume: number;
+    market_cap: number;
+  };
+}
+
 // --- Helper Functions ---
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,12 +49,12 @@ const sleep = (ms: number): Promise<void> =>
 
 async function fetchSingleCollectionInfo(
   slug: string
-): Promise<CollectionInfo> {
+): Promise<BasicCollectionInfo> {
   const url = `${OPENSEA_API_BASE}/collections/${slug}`;
   console.log(`[Info Fetch] Attempting for: ${slug}`);
 
   try {
-    const response = await axios.get(url, {
+    const response = await axios.get<{ collection: any }>(url, {
       headers: {
         Accept: 'application/json',
         'X-API-KEY': OPENSEA_API_KEY,
@@ -47,17 +62,41 @@ async function fetchSingleCollectionInfo(
       timeout: FETCH_TIMEOUT_MS,
     });
 
-    const collection = response.data;
-    if (!collection || !collection.collection) {
-      throw new Error(`Invalid data structure received for collection ${slug}`);
+    const collection = response.data?.collection; // Access the nested collection object
+    if (!collection) {
+      // Handle cases where the collection object might be missing
+      console.warn(`[Info Fetch] No collection data found for slug: ${slug}`);
+      // Return a default structure or throw a specific error
+      // For now, returning default to avoid breaking downstream processing potentially
+      return {
+        slug: slug,
+        name: null,
+        description: null,
+        image_url: null,
+        safelist_status: null,
+        stats: {
+          total_supply: 0,
+          num_owners: 0,
+          total_volume: 0,
+          market_cap: 0,
+        },
+      };
     }
 
+    // Construct the BasicCollectionInfo object
     return {
-      collection: collection.collection,
-      name: collection.name,
-      description: collection.description,
-      image_url: collection.image_url,
-      safelist_status: collection.safelist_request_status,
+      slug: slug, // Use the input slug as the identifier
+      name: collection.name ?? null,
+      description: collection.description ?? null,
+      image_url: collection.image_url ?? null,
+      safelist_status: collection.safelist_request_status ?? null,
+      // Safely access nested stats, providing defaults
+      stats: {
+        total_supply: collection.stats?.total_supply ?? 0,
+        num_owners: collection.stats?.num_owners ?? 0,
+        total_volume: collection.stats?.total_volume ?? 0,
+        market_cap: collection.stats?.market_cap ?? 0,
+      },
     };
   } catch (error) {
     if (axios.isAxiosError(error)) {
