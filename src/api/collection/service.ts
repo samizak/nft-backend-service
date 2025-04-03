@@ -1,5 +1,6 @@
 import { env } from 'process';
 import axios from 'axios';
+import pLimit from 'p-limit'; // <-- Revert to static import
 import redisClient from '../../lib/redis'; // Import Redis client
 import { BatchCollectionsResponse, CollectionResponseItem } from './types';
 
@@ -119,9 +120,6 @@ export async function fetchBatchCollectionData(
     return { data: {} };
   }
 
-  // Dynamically import p-limit here
-  const pLimit = (await import('p-limit')).default;
-
   const results: Record<
     string,
     CollectionResponseItem | Record<string, never>
@@ -162,7 +160,7 @@ export async function fetchBatchCollectionData(
   // 2. Fetch data for cache misses
   if (misses.length > 0) {
     console.log(`[API Service] Fetching ${misses.length} cache misses.`);
-    const limit = pLimit(MAX_CONCURRENT_REQUESTS); // Use the dynamically imported pLimit
+    const limit = pLimit(MAX_CONCURRENT_REQUESTS); // Use the statically imported pLimit
     const tasks = misses.map((miss) =>
       limit(() => processCollection(miss.slug, miss.contractAddress))
     );

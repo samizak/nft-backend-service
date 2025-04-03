@@ -16,6 +16,12 @@ interface PortfolioParams {
   address: string;
 }
 
+// Define a simple initial progress structure
+const initialProgress = {
+  step: 'Queued',
+  message: 'Calculation queued...',
+};
+
 export async function getPortfolioSummaryController(
   request: FastifyRequest<{ Params: PortfolioParams }>,
   reply: FastifyReply
@@ -69,51 +75,41 @@ export async function getPortfolioSummaryController(
     );
 
     // 2. Cache Miss: Check for Existing Job & Get Progress
-    const jobId = normalizedAddress;
-    const existingJob = await getPortfolioJob(jobId);
-    let jobState: string | undefined;
-    let progressData: any = null;
+    const jobInfo = await getPortfolioJob(normalizedAddress);
 
-    if (existingJob) {
-      jobState = await existingJob.getState();
-      progressData = existingJob.progress;
+    if (
+      jobInfo &&
+      (jobInfo.status === 'active' ||
+        jobInfo.status === 'waiting' ||
+        jobInfo.status === 'delayed')
+    ) {
+      // Job is running or queued - return 202 with LIVE progress
       request.log.info(
-        `[Portfolio API] Found existing job ${jobId} in state: ${jobState}, progress: ${JSON.stringify(progressData)}`
+        `[Portfolio API] Job found for ${normalizedAddress}. Status: ${jobInfo.status}, Progress:`,
+        jobInfo.progress
       );
-
-      if (['active', 'waiting', 'delayed'].includes(jobState)) {
-        request.log.info(
-          `[Portfolio API] Job ${jobId} is active/pending. Returning status: calculating with progress.`
-        );
-        return reply.code(202).send({
-          status: 'calculating',
-          data: null,
-          message:
-            progressData?.message ||
-            'Portfolio summary calculation is in progress.',
-          progress: progressData,
-        });
-      }
-      request.log.info(
-        `[Portfolio API] Job ${jobId} found in state ${jobState}. Cache miss persists. Will attempt to re-queue.`
-      );
+      return reply.code(202).send({
+        status: 'calculating',
+        data: null,
+        message: `Portfolio summary calculation is ${jobInfo.status}.`,
+        progress: jobInfo.progress || initialProgress, // Send actual progress, or initial if null
+      });
     }
 
     // 3. No Active Job Found or Job Completed/Failed: Trigger New Calculation
     request.log.info(
-      `[Portfolio API] No active job found or cache miss persists for ${address}. Triggering calculation.`
+      `[Portfolio API] No active job found or cache miss persists for ${normalizedAddress}. Triggering calculation.`
     );
 
     try {
       const addedJob = await addPortfolioJob({ address: normalizedAddress });
       if (addedJob) {
         request.log.info(
-          `[Portfolio API] Triggered/confirmed background job for: ${address} (Job ID: ${addedJob.id})`
+          `[Portfolio API] Triggered/confirmed background job for: ${normalizedAddress} (Job ID: ${addedJob.id})`
         );
-        progressData = addedJob.progress;
       } else {
         request.log.warn(
-          `[Portfolio API] Failed to trigger background job for: ${address}. Queue might be unavailable.`
+          `[Portfolio API] Failed to trigger background job for: ${normalizedAddress}. Queue might be unavailable.`
         );
         return reply.code(503).send({
           status: 'error',
@@ -124,7 +120,7 @@ export async function getPortfolioSummaryController(
       }
     } catch (queueError) {
       request.log.error(
-        `[Portfolio API Queue Error] Error interacting with queue for ${address}:`,
+        `[Portfolio API Queue Error] Error interacting with queue for ${normalizedAddress}:`,
         queueError
       );
       return reply.code(500).send({
@@ -138,14 +134,12 @@ export async function getPortfolioSummaryController(
     return reply.code(202).send({
       status: 'calculating',
       data: null,
-      message:
-        progressData?.message ||
-        'Portfolio summary calculation has been initiated.',
-      progress: progressData,
+      message: 'Portfolio summary calculation has been queued.',
+      progress: initialProgress,
     });
   } catch (error) {
     request.log.error(
-      `[Portfolio API Error] Unexpected error in controller for ${address}:`,
+      `[Portfolio API Error] Unexpected error in controller for ${normalizedAddress}:`,
       error
     );
     return reply.code(500).send({

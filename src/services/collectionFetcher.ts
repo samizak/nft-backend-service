@@ -1,4 +1,5 @@
 import { Queue, Worker, Job } from 'bullmq';
+import pLimit from 'p-limit';
 import dotenv from 'dotenv';
 
 import redisClient from '../lib/redis'; // Use our configured client
@@ -42,13 +43,11 @@ const collectionQueue = new Queue<CollectionJobData>(QUEUE_NAME, {
 
 // --- BullMQ Worker Definition ---
 
+const limit = pLimit(MAX_CONCURRENT_OS_REQUESTS); // Use statically imported pLimit
+
 const worker = new Worker<CollectionJobData>(
   QUEUE_NAME,
   async (job: Job<CollectionJobData>) => {
-    // Dynamically import p-limit inside the async job handler
-    const pLimit = (await import('p-limit')).default;
-    const limit = pLimit(MAX_CONCURRENT_OS_REQUESTS); // Instantiate limiter here
-
     const { slug, contractAddress } = job.data;
 
     // --- TEMPORARY CHECK - REMOVE LATER ---
@@ -67,7 +66,7 @@ const worker = new Worker<CollectionJobData>(
     );
 
     try {
-      // Use the dynamically imported and instantiated limit
+      // Use the top-level limit instance now
       const combinedData: CombinedCollectionData = await limit(() =>
         fetchCollectionDataUtil(slug, contractAddress)
       );

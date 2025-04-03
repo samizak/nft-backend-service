@@ -1,5 +1,6 @@
 import { Queue, Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
+import pLimit from 'p-limit';
 import dotenv from 'dotenv';
 
 import redisClient from '../lib/redis';
@@ -94,19 +95,23 @@ async function fetchAllNfts(address: string): Promise<any[]> {
 const worker = new Worker<PortfolioJobData>(
   QUEUE_NAME,
   async (job: Job<PortfolioJobData>) => {
-    // Dynamically import p-limit here, inside the async job handler
-    const pLimit = (await import('p-limit')).default;
+    // --- !!! ADDED LOGGING: VERY BEGINNING !!! ---
+    console.log(
+      `[Portfolio Worker DEBUG] Picked up job ID: ${job.id}, Name: ${job.name}, Data: ${JSON.stringify(job.data)}`
+    );
+    // -------------------------------------------
 
     const { address } = job.data;
     const startTime = Date.now();
     console.log(
-      `[Portfolio Worker] Starting calculation for address: ${address} (Job ID: ${job.id})`
+      `[Portfolio Worker] Step 0: Processing job ${job.id} for address: ${address} (Attempt ${job.attemptsMade + 1}/${job.opts.attempts})`
     );
     await job.updateProgress({
-      step: 'started',
+      step: 'Starting',
       nftCount: 0,
       collectionCount: 0,
       processedCollections: 0,
+      message: 'Initializing...',
     });
 
     try {
@@ -357,24 +362,30 @@ const worker = new Worker<PortfolioJobData>(
         collectionCount: summaryData.collectionCount,
         processedCollections: finalSuccessfulCount,
       });
-    } catch (error) {
+    } catch (error: any) {
+      const endTime = Date.now();
+      const duration = (endTime - startTime) / 1000;
+      // --- !!! IMPROVED ERROR LOGGING !!! ---
       console.error(
-        `[Portfolio Worker] Error processing job ${job.id} for address ${address}:`,
-        error
+        `[Portfolio Worker ERROR] Job ${job.id} (${address}) failed attempt ${job.attemptsMade + 1}. Duration: ${duration}s. Error: ${error.message}`,
+        error.stack // Log the full stack trace
       );
-      // Update progress on error
-      await job
-        .updateProgress({
-          step: 'error',
-        })
-        .catch((progError) =>
-          console.error('Failed to update progress on error:', progError)
-        ); // Don't let progress update fail the job
-
-      throw error; // Re-throw the error to signal failure to BullMQ
+      // -------------------------------------
+      try {
+        await job.updateProgress({
+          step: 'Error',
+          message: `Failed: ${error.message}`,
+        });
+      } catch (progressError: any) {
+        console.error(
+          `[Portfolio Worker ERROR] Failed to update progress after error for job ${job.id}:`,
+          progressError.message
+        );
+      }
+      throw error; // Re-throw for BullMQ retry logic
     }
   },
-  { connection: redisClient, concurrency: 5 } // Worker-level concurrency
+  { connection: redisClient, concurrency: 5 }
 );
 
 // --- Function to Add Jobs to the Queue ---
@@ -435,11 +446,23 @@ export async function addPortfolioJob(
   }
 }
 
-// --- Function to Get a Specific Job ---
+// Function to check job status and progress
 export async function getPortfolioJob(
-  jobId: string
-): Promise<Job<PortfolioJobData> | undefined> {
-  return portfolioQueue.getJob(jobId);
+  address: string
+): Promise<{ status: string; progress: any } | null> {
+  // Return type updated
+  const jobId = address; // Assuming address is the Job ID
+  const job = await portfolioQueue.getJob(jobId);
+
+  if (!job) {
+    return null; // No job found
+  }
+
+  const state = await job.getState();
+  const progress = job.progress; // Get the progress data
+
+  // Return both state and progress
+  return { status: state, progress: progress };
 }
 
 // --- Worker Event Listeners ---

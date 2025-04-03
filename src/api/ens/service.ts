@@ -22,6 +22,9 @@ function getProvider(): ethers.JsonRpcProvider {
   if (!ETH_RPC_URL) {
     throw new Error('Ethereum RPC URL (ETH_RPC_URL) is not configured.');
   }
+  console.log(
+    `[ENS Service DEBUG] Initializing JsonRpcProvider with URL: ${ETH_RPC_URL}`
+  );
   return new ethers.JsonRpcProvider(ETH_RPC_URL);
 }
 
@@ -44,7 +47,15 @@ export const resolveEnsName = async (name: string): Promise<string | null> => {
     console.log(`[ENS Service Cache MISS] Resolve: ${name}`);
 
     const provider = getProvider();
+    // --- Add detailed logging before the call ---
+    console.log(
+      `[ENS Service DEBUG] Attempting provider.resolveName('${name}')`
+    );
     const address = await provider.resolveName(name);
+    // --- Add detailed logging after the call ---
+    console.log(
+      `[ENS Service DEBUG] provider.resolveName('${name}') returned: ${address}`
+    );
 
     if (address) {
       console.log(`[ENS Service] Resolved: ${name} -> ${address}`);
@@ -55,9 +66,12 @@ export const resolveEnsName = async (name: string): Promise<string | null> => {
     }
     return address;
   } catch (error: any) {
+    // --- IMPROVED ERROR LOGGING ---
     console.error(
-      `[ENS Service] Error resolving ${name}:`,
-      error.message || error
+      `[ENS Service ERROR] Error resolving ${name}: ${error.message}`,
+      `Code: ${error.code || 'N/A'}, Reason: ${error.reason || 'N/A'}`,
+      // Log the full error object if possible, including stack if available
+      error
     );
     return null;
   }
@@ -85,7 +99,15 @@ export const lookupEnsAddress = async (
     console.log(`[ENS Service Cache MISS] Lookup: ${address}`);
 
     const provider = getProvider();
+    // --- Add detailed logging before the call ---
+    console.log(
+      `[ENS Service DEBUG] Attempting provider.lookupAddress('${normalizedAddress}')`
+    );
     const name = await provider.lookupAddress(normalizedAddress);
+    // --- Add detailed logging after the call ---
+    console.log(
+      `[ENS Service DEBUG] provider.lookupAddress('${normalizedAddress}') returned: ${name}`
+    );
 
     if (name) {
       console.log(`[ENS Service] Looked up: ${address} -> ${name}`);
@@ -96,9 +118,11 @@ export const lookupEnsAddress = async (
     }
     return name;
   } catch (error: any) {
+    // --- IMPROVED ERROR LOGGING ---
     console.error(
-      `[ENS Service] Error looking up ${address}:`,
-      error.message || error
+      `[ENS Service ERROR] Error looking up ${address}: ${error.message}`,
+      `Code: ${error.code || 'N/A'}, Reason: ${error.reason || 'N/A'}`,
+      error
     );
     return null;
   }
