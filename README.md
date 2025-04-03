@@ -50,20 +50,28 @@ eslint.config.mjs       # ESLint v9+ configuration
 prettier.config.js      # Prettier configuration
 package.json
 tsconfig.json
+Dockerfile
 README.md
 ```
 
 ## 4. Configuration (.env)
 
-Environment variables are managed via a `.env` file in the project root. Create one based on `.env.example`.
+Environment variables are managed via a `.env` file in the project root for local development (especially when running via Docker). Create one based on `.env.example`.
 
-- `PORT`: Port the Fastify server listens on (e.g., 3001).
-- `MONGODB_URI`: Connection string for your MongoDB database.
-- `OPENSEA_API_KEY`: Required for OpenSea API access (collection metadata, events).
-- `ALCHEMY_API_KEY`: Required for Alchemy NFT API access (floor prices).
-- `COINGECKO_API_KEY`: (Optional but Recommended) API key for CoinGecko (ETH price).
-- `INFURA_API_KEY`: Required for Infura access (gas prices).
-- `REDIS_URL`: (Implicitly used by `ioredis` if configured, otherwise defaults) Connection string for Redis.
+- `PORT`: Port the Fastify server listens on (e.g., 3001 for `npm run dev`, or 8080 to match Dockerfile `EXPOSE` when using `docker run`).
+- `MONGODB_URI`: Connection string for your MongoDB database (e.g., MongoDB Atlas).
+- `REDIS_URL`: **TLS connection string** for your Redis instance (e.g., Upstash `rediss://...`).
+- `OPENSEA_API_KEY`: Required for OpenSea API.
+- `ALCHEMY_API_KEY`: Required for Alchemy NFT API.
+- `COINGECKO_API_KEY`: (Optional but Recommended) API key for CoinGecko.
+- `INFURA_API_KEY`: Required for Infura (Gas price, ENS).
+- `ETH_RPC_URL`: Full RPC URL (e.g., Infura mainnet URL including API key).
+- `JWT_SECRET`: Strong secret key for signing authentication tokens.
+- `JWT_EXPIRES_IN`: Validity period for JWTs (e.g., `1d`).
+- `NODE_ENV`: Set to `development` or `production`.
+
+** VERY IMPORTANT Configuration Note:**
+When setting values in the `.env` file (for local Docker testing) or in Google Secret Manager (for deployment), ensure that **URI/API Key values DO NOT contain surrounding quotes (`"` or `'`) and have NO leading/trailing whitespace or newline characters.** Incorrect formatting will cause connection errors or API authentication failures (e.g., `Invalid character in header`, `Invalid scheme`).
 
 ## 5. Background Services
 
@@ -197,21 +205,79 @@ All endpoints are prefixed with `/api`.
 
 - (Admin-specific endpoints. Purpose and implementation details would be defined here if implemented.)
 
-## 8. Setup & Running
+## 8. Setup & Running Locally
 
 1.  **Clone:** `git clone <repository-url>`
 2.  **Install:** `cd nft-backend-service && npm install`
-3.  **Configure:** Create a `.env` file in the root directory and populate it with the required environment variables (see Section 4). Ensure MongoDB and Redis services are running and accessible.
-4.  **Run (Development):** `npm run dev` (Uses `ts-node-dev` for auto-reloading)
-5.  **Build (Production):** `npm run build`
-6.  **Run (Production):** `npm start` (Runs the compiled JavaScript from the `dist/` folder)
+3.  **Configure Local `.env`:**
+    - Copy `.env.example` to `.env`.
+    - Populate it with your local/development credentials (e.g., local MongoDB/Redis if used, or dev API keys).
+    - **Heed the formatting warning in Section 4!** No quotes or extra whitespace.
+4.  **Choose Running Method:**
+    - **A) Development Mode (Hot-Reloading):**
+      - Requires Node.js installed locally.
+      - `npm run dev` (Uses `ts-node-dev` for auto-reloading)
+      - Server typically available at `http://localhost:3001` (or `PORT` in `.env`).
+    - **B) Docker Container (Production-like Environment):**
+      - Requires Docker Desktop installed and running.
+      - Ensure the `.env` file is configured correctly (especially `PORT=8080` to match Dockerfile `EXPOSE`, and correct DB/Redis/API credentials accessible from Docker).
+      - **Build the image:** `docker build -t nft-backend-service .`
+      - **Run the container:** `docker run -d -p 3001:8080 --env-file .env --name nft-backend-container nft-backend-service`
+        - `-d`: Run detached (background).
+        - `-p 3001:8080`: Map port 3001 on your host to port 8080 in the container.
+        - `--env-file .env`: Load environment variables from your local `.env` file.
+        - `--name ...`: Assign a name for easy management.
+      - Server available at `http://localhost:3001` (host port).
+      - **View Logs:** `docker logs nft-backend-container`
+      - **Stop/Remove:** `docker stop nft-backend-container`, `docker rm nft-backend-container`
 
-## 9. Linting & Formatting
+## 9. Deployment (Google Cloud Run)
+
+This service is designed for deployment as a Docker container, typically hosted on Google Cloud Run.
+
+1.  **Prerequisites:**
+    - Google Cloud Platform (GCP) project set up with Billing enabled.
+    - `gcloud` CLI installed and authenticated (`gcloud init`, `gcloud auth login`).
+    - APIs enabled: Artifact Registry (`artifactregistry.googleapis.com`), Cloud Run (`run.googleapis.com`), Secret Manager (`secretmanager.googleapis.com`).
+2.  **Store Secrets:** Store ALL sensitive configuration values (`MONGODB_URI`, `REDIS_URL`, `OPENSEA_API_KEY`, `ALCHEMY_API_KEY`, `INFURA_API_KEY`, `COINGECKO_API_KEY`, `ETH_RPC_URL`, `JWT_SECRET`) securely in **Google Secret Manager**. Ensure the stored values are clean (no quotes/whitespace). Create secrets like `MONGODB_URI_SECRET`, `OPENSEA_API_KEY_SECRET`, etc.
+3.  **Create Artifact Registry Repo:** Create a Docker repository in Artifact Registry (e.g., `nftportfolio` in `us-central1`).
+    ```bash
+    gcloud artifacts repositories create nftportfolio \
+        --repository-format=docker \
+        --location=us-central1
+    ```
+4.  **Configure Docker Auth:** Allow Docker to push to your registry.
+    ```bash
+    gcloud auth configure-docker us-central1-docker.pkg.dev
+    ```
+5.  **Build Docker Image:** Ensure your local code is up-to-date.
+    ```bash
+    docker build -t nft-backend-service .
+    ```
+6.  **Tag Image:** Tag the image with the full registry path (replace `YOUR_GCP_PROJECT_ID`).
+    ```bash
+    docker tag nft-backend-service us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/nftportfolio/nft-backend-service:latest
+    ```
+7.  **Push Image:** Push the tagged image to Artifact Registry.
+    ```bash
+    docker push us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/nftportfolio/nft-backend-service:latest
+    ```
+8.  **Deploy to Cloud Run:**
+    - Use the Google Cloud Console or `gcloud run deploy`.
+    - Select the image pushed in the previous step.
+    - Set **Container Port** to `8080`.
+    - Configure **Environment Variables**: Map the secrets created in Step 2 to the environment variables the application expects (e.g., Env Var Name `MONGODB_URI` references Secret `MONGODB_URI_SECRET`, version `latest`). Set non-secret variables like `NODE_ENV=production`, `PORT=8080` directly.
+    - Grant Cloud Run Service Account Permissions: The Cloud Run service's service account (e.g., `PROJECT_NUMBER-compute@developer.gserviceaccount.com`) needs the **`Secret Manager Secret Accessor`** IAM role at the project level to read the secrets.
+    - Configure Ingress (Allow all) and Authentication (Allow unauthenticated).
+    - Deploy the service.
+9.  **Configure Frontend & CORS:** Update the frontend's API base URL environment variable (`NEXT_PUBLIC_API_BASE_URL`) to the deployed Cloud Run URL. Ensure the backend's CORS configuration (e.g., `CORS_ORIGIN` environment variable in Cloud Run) allows requests from the deployed frontend's domain.
+
+## 10. Linting & Formatting
 
 - Run `npm run lint` to check for code style issues using ESLint.
 - Run `npm run format` to automatically format code using Prettier.
 
-## 10. Future Considerations
+## 11. Future Considerations
 
 - **Scalable Sync Lock:** Replace the in-memory `isSyncing` set for event syncs with a Redis-based distributed lock if scaling to multiple server instances.
 - **Real-time Progress:** Implement Server-Sent Events (SSE) for portfolio calculation progress instead of relying on frontend polling for a better UX.
