@@ -279,8 +279,14 @@ This service is designed for deployment as a Docker container, typically hosted 
 
 ## 11. Future Considerations
 
+- **User Authentication & Management:** Implement Sign-In with Ethereum (SIWE), JWT sessions, and user profile management with multi-wallet linking.
 - **Scalable Sync Lock:** Replace the in-memory `isSyncing` set for event syncs with a Redis-based distributed lock if scaling to multiple server instances.
+- **Portfolio & NFT Analysis:** Add cost basis tracking, P&L calculation, rarity integration, historical floor price charts, and individual NFT detail endpoints.
+- **Data Sources & Real-Time Updates:** Integrate redundant/alternative data sources (e.g., Reservoir), implement real-time event streams (e.g., OpenSea Stream API), and use more comprehensive blockchain data for event syncing.
+- **Notifications & Alerts:** Implement floor price alerts and wallet activity notifications (requires notification infrastructure).
+- **Cross-Chain Support:** Expand service to support tracking assets on other blockchains (e.g., Polygon, Solana).
+- **API Enhancements:** Consider adding a GraphQL endpoint for more flexible data querying.
 - **Real-time Progress:** Implement Server-Sent Events (SSE) for portfolio calculation progress instead of relying on frontend polling for a better UX.
-- **Advanced Analytics:** Implement backend logic for historical data tracking, P&L calculations, trade analysis (total trades, win rate, avg hold time) to enable richer dashboard features.
 - **Error Reporting:** Integrate a dedicated error reporting service (e.g., Sentry).
 - **API Documentation:** Generate formal API documentation (e.g., using Swagger/OpenAPI with `fastify-swagger`).
+- **Testing & CI/CD:** Develop a comprehensive test suite (unit, integration, E2E) and set up automated CI/CD pipelines for deployment.
