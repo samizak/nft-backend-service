@@ -1,5 +1,5 @@
 import { Queue, Worker, Job } from 'bullmq';
-import pLimit from 'p-limit';
+import IORedis from 'ioredis';
 import dotenv from 'dotenv';
 
 import redisClient from '../lib/redis';
@@ -94,6 +94,9 @@ async function fetchAllNfts(address: string): Promise<any[]> {
 const worker = new Worker<PortfolioJobData>(
   QUEUE_NAME,
   async (job: Job<PortfolioJobData>) => {
+    // Dynamically import p-limit here, inside the async job handler
+    const pLimit = (await import('p-limit')).default;
+
     const { address } = job.data;
     const startTime = Date.now();
     console.log(

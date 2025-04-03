@@ -1,4 +1,5 @@
-import pLimit from 'p-limit';
+import { env } from 'process';
+import axios from 'axios';
 import redisClient from '../../lib/redis'; // Import Redis client
 import { BatchCollectionsResponse, CollectionResponseItem } from './types';
 
@@ -118,7 +119,9 @@ export async function fetchBatchCollectionData(
     return { data: {} };
   }
 
-  // Use Record<string, never> instead of {} for the empty object case
+  // Dynamically import p-limit here
+  const pLimit = (await import('p-limit')).default;
+
   const results: Record<
     string,
     CollectionResponseItem | Record<string, never>
@@ -159,7 +162,7 @@ export async function fetchBatchCollectionData(
   // 2. Fetch data for cache misses
   if (misses.length > 0) {
     console.log(`[API Service] Fetching ${misses.length} cache misses.`);
-    const limit = pLimit(MAX_CONCURRENT_REQUESTS);
+    const limit = pLimit(MAX_CONCURRENT_REQUESTS); // Use the dynamically imported pLimit
     const tasks = misses.map((miss) =>
       limit(() => processCollection(miss.slug, miss.contractAddress))
     );
@@ -169,7 +172,7 @@ export async function fetchBatchCollectionData(
     missResults.forEach((result, index) => {
       const slug = misses[index].slug;
       if (result.status === 'fulfilled' && result.value) {
-        results[slug] = result.value; // Store the fetched & adapted data
+        results[slug] = result.value;
       } else {
         console.warn(
           `[API Service] Failed to fetch cache miss for slug: ${slug}. Reason:`,
@@ -177,7 +180,6 @@ export async function fetchBatchCollectionData(
             ? result.reason
             : 'Processing returned null'
         );
-        // Ensure failed fetches are represented by empty object in final response
         results[slug] = {} as Record<string, never>;
       }
     });
@@ -189,7 +191,5 @@ export async function fetchBatchCollectionData(
   console.log(
     `[API Service] Returning results for slugs: ${Object.keys(results).join(', ')}`
   );
-
-  // Revert: Keep the original return structure matching BatchCollectionsResponse type
   return { data: results };
 }

@@ -36,19 +36,22 @@ const ActivityEventSchema: Schema = new Schema<IActivityEvent>(
     created_date: { type: Number, required: true, index: true }, // Indexed for sorting
     transaction: { type: String, required: true, index: true }, // Indexed for lookups, allow duplicates
     nft: {
-      display_image_url: { type: String, required: false, default: null },
+      display_image_url: { type: String, default: null },
       identifier: { type: String, required: true },
-      name: { type: String, required: false, default: null },
-      image_url: { type: String, required: false, default: null },
+      name: { type: String, default: null },
+      image_url: { type: String, default: null },
       collection: { type: String, required: true, index: true },
       contract: { type: String, required: true, index: true },
     },
     payment: {
-      quantity: { type: String },
-      token_address: { type: String },
-      decimals: { type: String },
-      symbol: { type: String },
-      required: false, // Make the whole payment object optional
+      type: {
+        quantity: { type: String },
+        token_address: { type: String },
+        decimals: { type: String },
+        symbol: { type: String },
+      },
+      required: false,
+      default: undefined,
     },
     from_account: {
       address: { type: String, required: true, index: true, lowercase: true }, // Indexed and lowercase for queries
